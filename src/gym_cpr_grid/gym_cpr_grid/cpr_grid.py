@@ -75,7 +75,6 @@ class CPRGridEnv(gym.Env):
         )
 
         self.elapsed_steps, self.agent_positions, self.grid = None, None, None
-        self._rendered_img = None
         self.reset()
 
     def reset(self):
@@ -131,9 +130,10 @@ class CPRGridEnv(gym.Env):
         ), "Actions should be given as a list with lenght equal to the number of agents"
 
         # Initiliaze variables
-        observations = [None] * self.n_agents
-        rewards = [-self.RESOURCE_COLLECTION_REWARD] * self.n_agents
-        dones = [False] * self.n_agents
+        observations = {h: None for h in self.n_agents}
+        rewards = {h: -self.RESOURCE_COLLECTION_REWARD for h in range(self.n_agents)}
+        dones = {h: False for h in range(self.n_agents)}
+        infos = {h: dict() for h in range(self.n_agents)}
 
         # Move all agents
         for agent_handle, action in enumerate(actions):
@@ -150,16 +150,16 @@ class CPRGridEnv(gym.Env):
         # Check if we reached end of episode
         self.elapsed_steps += 1
         if self._is_resource_depleted() or self.elapsed_steps == self.max_steps:
-            dones = [True] * self.n_agents
+            dones = {h: True for h in range(self.n_agents)}
 
         # Compute observations for each agent
         for agent_handle in range(self.n_agents):
-            observations = self._get_observation(agent_handle)
+            observations[agent_handle] = self._get_observation(agent_handle)
 
         # Respawn resources
         self._respawn_resources()
 
-        return observations, rewards, dones, {}
+        return observations, rewards, dones, infos
 
     def _compute_new_agent_position(self, agent_handle, action):
         """

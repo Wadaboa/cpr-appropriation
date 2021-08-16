@@ -2,3 +2,5 @@ black==21.6b0
 jupyter==1.0.0
 gym==0.18.3
 matplotlib==3.4.3
+torch==1.9.0
+ray[rllib]==1.5.2
