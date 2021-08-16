@@ -1,264 +1,13 @@
 import random
 import itertools
-from enum import IntEnum
 
 import numpy as np
 import matplotlib.pyplot as plt
 import gym
-from gym import error, spaces, utils
-from gym.utils import seeding
+from gym import spaces
 from matplotlib import colors
 
-
-class AgentAction(IntEnum):
-    """
-    Defines the action of an agent
-    """
-
-    STEP_FORWARD = 0
-    STEP_BACKWARD = 1
-    STEP_LEFT = 2
-    STEP_RIGHT = 3
-    ROTATE_LEFT = 4
-    ROTATE_RIGHT = 5
-    STAND_STILL = 6
-    TAG = 7
-
-    @classmethod
-    def random(cls):
-        """
-        Return a random action out of the 8 possible values
-        """
-        return AgentAction(random.randint(0, cls.size() - 1))
-
-    @classmethod
-    def values(cls):
-        """
-        Return all possible values as integers
-        """
-        return [v.value for v in cls.__members__.values()]
-
-    @classmethod
-    def is_valid(cls, action):
-        """
-        Check if the given action is valid
-        """
-        if isinstance(action, int):
-            return action in cls.values()
-        elif isinstance(action, AgentAction):
-            return action in cls.__members__.keys()
-        return False
-
-    @classmethod
-    def size(cls):
-        """
-        Return the number of possible actions (i.e. 8)
-        """
-        return len(cls.__members__)
-
-
-class CPRGridActionSpace(spaces.Discrete):
-    """
-    The action space spanned by all the possible agent actions
-    """
-
-    def __init__(self):
-        super(CPRGridActionSpace, self).__init__(AgentAction.size())
-
-    def sample(self):
-        """
-        Sample a random action from the action space
-        """
-        return AgentAction.random()
-
-    def contains(self, action):
-        """
-        Check if the given action is contained in the action space
-        """
-        return AgentAction.is_valid(action)
-
-    def __repr__(self):
-        return "CPRGridActionSpace()"
-
-    def __eq__(self, other):
-        return isinstance(other, CPRGridActionSpace)
-
-
-class AgentOrientation(IntEnum):
-    """
-    Defines the orientation of an agent in an unspecified position,
-    as the 4 cardinal directions (N, E, S, W)
-    """
-
-    UP = 0
-    RIGHT = 1
-    DOWN = 2
-    LEFT = 3
-
-    def rotate_left(self):
-        """
-        Return a new orientation after the agent rotates itself to its left
-        """
-        return AgentOrientation((self.value - 1) % self.size())
-
-    def rotate_right(self):
-        """
-        Return a new orientation after the agent rotates itself to its right
-        """
-        return AgentOrientation((self.value + 1) % self.size())
-
-    @classmethod
-    def random(cls):
-        """
-        Return a random orientation out of the 4 possible values
-        """
-        return AgentOrientation(random.randint(0, cls.size() - 1))
-
-    @classmethod
-    def size(cls):
-        """
-        Return the number of possible orientations (i.e. 4)
-        """
-        return len(cls.__members__)
-
-
-class AgentPosition:
-    """
-    Defines the position of an agent as a triplet (x, y, o), where (x, y)
-    are coordinates on a 2D grid (with origin on the upper left corner)
-    and (o, ) is the orientation of the agent
-    """
-
-    def __init__(self, x, y, o):
-        assert isinstance(
-            o, AgentOrientation
-        ), "The given orientation must be an instance of AgentOrientation"
-        self.x = x
-        self.y = y
-        self.o = o
-
-    def step_forward(self):
-        """
-        Return the new position of the agent after stepping forward
-        """
-        if self.o == AgentOrientation.UP:
-            return AgentPosition(self.x, self.y - 1, self.o)
-        elif self.o == AgentOrientation.RIGHT:
-            return AgentPosition(self.x + 1, self.y, self.o)
-        elif self.o == AgentOrientation.DOWN:
-            return AgentPosition(self.x, self.y + 1, self.o)
-        elif self.o == AgentOrientation.LEFT:
-            return AgentPosition(self.x - 1, self.y, self.o)
-        return self
-
-    def step_backward(self):
-        """
-        Return the new position of the agent after stepping backward
-        """
-        if self.o == AgentOrientation.UP:
-            return AgentPosition(self.x, self.y + 1, self.o)
-        elif self.o == AgentOrientation.RIGHT:
-            return AgentPosition(self.x - 1, self.y, self.o)
-        elif self.o == AgentOrientation.DOWN:
-            return AgentPosition(self.x, self.y - 1, self.o)
-        elif self.o == AgentOrientation.LEFT:
-            return AgentPosition(self.x + 1, self.y, self.o)
-        return self
-
-    def step_left(self):
-        """
-        Return the new position of the agent after stepping to its left
-        """
-        if self.o == AgentOrientation.UP:
-            return AgentPosition(self.x - 1, self.y, self.o)
-        if self.o == AgentOrientation.RIGHT:
-            return AgentPosition(self.x, self.y - 1, self.o)
-        if self.o == AgentOrientation.DOWN:
-            return AgentPosition(self.x + 1, self.y, self.o)
-        if self.o == AgentOrientation.LEFT:
-            return AgentPosition(self.x, self.y + 1, self.o)
-
-    def step_right(self):
-        """
-        Return the new position of the agent after stepping to its right
-        """
-        if self.o == AgentOrientation.UP:
-            return AgentPosition(self.x + 1, self.y, self.o)
-        if self.o == AgentOrientation.RIGHT:
-            return AgentPosition(self.x, self.y + 1, self.o)
-        if self.o == AgentOrientation.DOWN:
-            return AgentPosition(self.x - 1, self.y, self.o)
-        if self.o == AgentOrientation.LEFT:
-            return AgentPosition(self.x, self.y - 1, self.o)
-
-    def rotate_left(self):
-        """
-        Return the new position of the agent after rotating left
-        """
-        return AgentPosition(self.x, self.y, self.o.rotate_left())
-
-    def rotate_right(self):
-        """
-        Return the new position of the agent after rotating right
-        """
-        return AgentPosition(self.x, self.y, self.o.rotate_right())
-
-    def stand_still(self):
-        """
-        Return the new position of the agent after standing still
-        """
-        return self
-
-    def tag(self):
-        """
-        Return the new position of the agent after taggin an opponent
-        """
-        return self
-
-    def get_new_position(self, action):
-        """
-        Given an action, return the new position of the agent
-        """
-        assert isinstance(
-            action, AgentAction
-        ), "The given action must be an instance of AgentAction"
-        return getattr(self, action.name.lower())()
-
-    def __repr__(self):
-        return f"AgentPosition({self.x}, {self.y}, {self.o})"
-
-    def __eq__(self, other):
-        return (
-            isinstance(other, AgentPosition)
-            and self.x == other.x
-            and self.y == other.y
-            and self.o == other.o
-        )
-
-
-class GridCell(IntEnum):
-    """
-    Defines what could fit in a cell of the 2D grid, i.e.
-    either an agent or a resource or an empty cell
-    """
-
-    EMPTY = 0
-    RESOURCE = 1
-    AGENT = 2
-
-    @classmethod
-    def values(cls):
-        """
-        Return all possible values as integers
-        """
-        return [v.value for v in cls.__members__.values()]
-
-    @classmethod
-    def size(cls):
-        """
-        Return the number of possible cell types (i.e. 3)
-        """
-        return len(cls.__members__)
+from . import utils
 
 
 class CPRGridEnv(gym.Env):
@@ -271,14 +20,14 @@ class CPRGridEnv(gym.Env):
 
     # Colors
     GRID_CELL_COLORS = {
-        GridCell.EMPTY: "black",
-        GridCell.RESOURCE: "green",
-        GridCell.AGENT: "red",
+        utils.GridCell.EMPTY: "black",
+        utils.GridCell.RESOURCE: "green",
+        utils.GridCell.AGENT: "red",
     }
     FOV_OWN_AGENT_COLOR = "blue"
     COLORMAP = colors.ListedColormap(list(GRID_CELL_COLORS.values()))
     COLOR_BOUNDARIES = colors.BoundaryNorm(
-        GridCell.values() + [GridCell.size()], GridCell.size()
+        utils.GridCell.values() + [utils.GridCell.size()], utils.GridCell.size()
     )
 
     # Rendering option
@@ -313,7 +62,7 @@ class CPRGridEnv(gym.Env):
         self.ball_radius = ball_radius
         self.max_steps = max_steps
 
-        self.action_space = CPRGridActionSpace()
+        self.action_space = utils.CPRGridActionSpace()
         self.observation_space = spaces.Box(
             low=0,
             high=255,
@@ -343,10 +92,10 @@ class CPRGridEnv(gym.Env):
         """
         Returns a random position in the 2D grid
         """
-        return AgentPosition(
+        return utils.AgentPosition(
             x=random.randint(0, self.grid_width - 1),
             y=random.randint(0, self.grid_height - 1),
-            o=AgentOrientation.random(),
+            o=utils.AgentOrientation.random(),
         )
 
     def _get_initial_grid(self):
@@ -355,11 +104,11 @@ class CPRGridEnv(gym.Env):
         initial random resources
         """
         # Assign agent positions in the grid
-        grid = np.full((self.grid_height, self.grid_width), GridCell.EMPTY.value)
+        grid = np.full((self.grid_height, self.grid_width), utils.GridCell.EMPTY.value)
         for agent_position in self.agent_positions:
-            grid[agent_position.y, agent_position.x] = GridCell.AGENT.value
+            grid[agent_position.y, agent_position.x] = utils.GridCell.AGENT.value
 
-        # Compute uniformely distributes resources
+        # Compute uniformely distributed resources
         resource_mask = np.random.randint(
             low=0, high=2, size=(self.grid_height, self.grid_width), dtype=bool
         )
@@ -368,8 +117,8 @@ class CPRGridEnv(gym.Env):
 
         # Assign resources to cells that are not occupied by agents
         for x, y in resource_indices:
-            if grid[y, x] == GridCell.EMPTY.value:
-                grid[y, x] = GridCell.RESOURCE.value
+            if grid[y, x] == utils.GridCell.EMPTY.value:
+                grid[y, x] = utils.GridCell.RESOURCE.value
 
         return grid
 
@@ -391,7 +140,6 @@ class CPRGridEnv(gym.Env):
         for agent_handle, action in enumerate(actions):
             # Compute new position
             new_agent_position = self._compute_new_agent_position(agent_handle, action)
-            self.agent_positions[agent_handle] = new_agent_position
 
             # Assign reward for resource collection
             if self._has_resource(new_agent_position):
@@ -438,11 +186,12 @@ class CPRGridEnv(gym.Env):
         Set the previous position as empty and the new one as occupied
         """
         assert isinstance(
-            new_position, AgentPosition
+            new_position, utils.AgentPosition
         ), "The given position should be an instance of AgentPosition"
         current_position = self.agent_positions[agent_handle]
-        self.grid[current_position.y, current_position.x] = GridCell.EMPTY.value
-        self.grid[new_position.y, new_position.x] = GridCell.AGENT.value
+        self.grid[current_position.y, current_position.x] = utils.GridCell.EMPTY.value
+        self.grid[new_position.y, new_position.x] = utils.GridCell.AGENT.value
+        self.agent_positions[agent_handle] = new_position
 
     def _is_move_feasible(self, position):
         """
@@ -458,16 +207,16 @@ class CPRGridEnv(gym.Env):
         Check if the given position is occupied by another agent in the grid
         """
         assert isinstance(
-            position, AgentPosition
+            position, utils.AgentPosition
         ), "The given position should be an instance of AgentPosition"
-        return self.grid[position.y, position.x] == GridCell.AGENT.value
+        return self.grid[position.y, position.x] == utils.GridCell.AGENT.value
 
     def _is_position_in_grid(self, position):
         """
         Check if the given position is within the boundaries of the grid
         """
         assert isinstance(
-            position, AgentPosition
+            position, utils.AgentPosition
         ), "The given position should be an instance of AgentPosition"
         if position.x < 0 or position.x >= self.grid_width:
             return False
@@ -480,16 +229,16 @@ class CPRGridEnv(gym.Env):
         Check if the given position is occupied by a resource in the grid
         """
         assert isinstance(
-            position, AgentPosition
-        ), "The given position should be an instance of AgentPosition"
-        return self.grid[position.y, position.x] == GridCell.RESOURCE.value
+            position, utils.AgentPosition
+        ), "The given position should be an instance of utils.AgentPosition"
+        return self.grid[position.y, position.x] == utils.GridCell.RESOURCE.value
 
     def _is_resource_depleted(self):
         """
         Check if there is at least one resource available in the environment
         or if the resource is depleted
         """
-        return len(self.grid[self.grid == GridCell.RESOURCE.value]) == 0
+        return len(self.grid[self.grid == utils.GridCell.RESOURCE.value]) == 0
 
     def _get_observation(self, agent_handle):
         """
@@ -502,13 +251,13 @@ class CPRGridEnv(gym.Env):
 
         # Set colors for resources and agents
         fov = np.where(
-            fov == GridCell.RESOURCE,
-            colors.to_rgb(self.GRID_CELL_COLORS[GridCell.RESOURCE]),
+            fov == utils.GridCell.RESOURCE,
+            colors.to_rgb(self.GRID_CELL_COLORS[utils.GridCell.RESOURCE]),
             fov,
         )
         fov = np.where(
-            fov == GridCell.AGENT,
-            colors.to_rgb(self.GRID_CELL_COLORS[GridCell.AGENT]),
+            fov == utils.GridCell.AGENT,
+            colors.to_rgb(self.GRID_CELL_COLORS[utils.GridCell.AGENT]),
             fov,
         )
         fov[0, self.fov_squares_side] = colors.to_rgb(self.FOV_OWN_AGENT_COLOR)
@@ -521,11 +270,11 @@ class CPRGridEnv(gym.Env):
         in a ball centered around each currently empty location
         """
         for x, y in itertools.product(range(self.grid_width), range(self.grid_height)):
-            if self.grid[y, x] == GridCell.EMPTY.value:
+            if self.grid[y, x] == utils.GridCell.EMPTY.value:
                 l = len(self._extract_ball(x, y))
                 p = self._respawn_probability(l)
                 if np.random.binomial(1, p):
-                    self.grid[y, x] = GridCell.RESOURCE.value
+                    self.grid[y, x] = utils.GridCell.RESOURCE.value
 
     def _respawn_probability(self, l):
         """
@@ -557,7 +306,7 @@ class CPRGridEnv(gym.Env):
             grid,
             pad_width=[y_pad_width, x_pad_width],
             mode="constant",
-            constant_values=GridCell.EMPTY.value,
+            constant_values=utils.GridCell.EMPTY.value,
         )
         return padded_grid, x_pad_width, y_pad_width
 
@@ -573,11 +322,11 @@ class CPRGridEnv(gym.Env):
         grid = self.grid.copy()
         k = (
             1
-            if agent_position.o == AgentOrientation.LEFT
+            if agent_position.o == utils.AgentOrientation.LEFT
             else 2
-            if agent_position.o == AgentOrientation.UP
+            if agent_position.o == utils.AgentOrientation.UP
             else 3
-            if agent_position.o == AgentOrientation.RIGHT
+            if agent_position.o == utils.AgentOrientation.RIGHT
             else 0
         )
         rotated_grid = np.rot90(grid, k=k)
@@ -625,7 +374,7 @@ class CPRGridEnv(gym.Env):
         centered around the given position
         """
         # Pad the 2D grid so as not have indexing errors in ball extraction
-        padded_grid = self._pad_grid(
+        padded_grid, x_pad_width, y_pad_width = self._pad_grid(
             self.grid,
             x,
             y,
@@ -634,8 +383,14 @@ class CPRGridEnv(gym.Env):
         )
 
         # Extract the ball
-        sx, ex = x - self.ball_radius, x + self.ball_radius + 1
-        sy, ey = y - self.ball_radius, y + self.ball_radius + 1
+        sx, ex = (
+            x_pad_width[0] + x - self.ball_radius,
+            x_pad_width[0] + x + self.ball_radius + 1,
+        )
+        sy, ey = (
+            y_pad_width[0] + y - self.ball_radius,
+            y_pad_width[0] + y + self.ball_radius + 1,
+        )
         ball = padded_grid[sy:ey, sx:ex]
 
         # Compute a boolean mask shaped like a ball
@@ -648,7 +403,7 @@ class CPRGridEnv(gym.Env):
         mask = xg ** 2 + yg ** 2 <= self.ball_radius ** 2
         kernel[mask] = 1
 
-        return ball[kernel]
+        return ball[kernel.astype(bool)]
 
     def plot_observation(self, obs):
         """
