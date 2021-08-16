@@ -203,7 +203,13 @@ class CPRGridEnv(gym.Env):
     """
 
     RESOURCE_COLLECTION_REWARD = 1
-    COLORMAP = colors.ListedColormap(["black", "green", "red"])
+    GRID_CELL_COLORS = {
+        GridCell.EMPTY: "black",
+        GridCell.RESOURCE: "green",
+        GridCell.AGENT: "red",
+    }
+    FOV_OWN_AGENT_COLOR = "blue"
+    COLORMAP = colors.ListedColormap(list(GRID_CELL_COLORS.values()))
     COLOR_BOUNDARIES = colors.BoundaryNorm([-1] + GridCell.values(), GridCell.size())
     metadata = {"render.modes": ["human", "rgb_array"]}
 
@@ -217,6 +223,7 @@ class CPRGridEnv(gym.Env):
         tagging_ability=True,
         beam_squares_front=20,
         beam_squares_width=5,
+        ball_radius=2,
         max_steps=1000,
     ):
         super(CPRGridEnv, self).__init__()
@@ -229,6 +236,7 @@ class CPRGridEnv(gym.Env):
         self.tagging_ability = tagging_ability
         self.beam_squares_front = beam_squares_front
         self.beam_squares_width = beam_squares_width
+        self.ball_radius = ball_radius
         self.max_steps = max_steps
 
         self.action_space = spaces.Discrete(AgentAction.size())
@@ -293,23 +301,32 @@ class CPRGridEnv(gym.Env):
 
         # Move all agents
         for agent_handle, action in enumerate(actions):
-            new_agent_position = self._move_agent(agent_handle, action)
+            # Compute new position
+            new_agent_position = self._compute_new_agent_position(agent_handle, action)
             self.agent_positions[agent_handle] = new_agent_position
+
+            # Assign reward for resource collection
             if self._has_resource(new_agent_position):
                 rewards[agent_handle] = self.RESOURCE_COLLECTION_REWARD
 
-        # Check if the we reached end of episode
+            # Move the agent only after checking for resource presence
+            self._move_agent(agent_handle, new_agent_position)
+
+        # Check if we reached end of episode
         self.elapsed_steps += 1
         if self._is_resource_depleted() or self.elapsed_steps == self.max_steps:
             dones = [True] * self.n_agents
 
         # Compute observations for each agent
         for agent_handle in range(self.n_agents):
-            pass
+            observations = self._get_observation(agent_handle)
+
+        # Respawn resources
+        self._respawn_resources()
 
         return observations, rewards, dones, {}
 
-    def _move_agent(self, agent_handle, action):
+    def _compute_new_agent_position(self, agent_handle, action):
         """
         Compute a new position for the given agent, after performing
         the given action
@@ -319,20 +336,25 @@ class CPRGridEnv(gym.Env):
         ), "The given agent handle does not exist"
 
         # Compute new position
-        curret_agent_position = self.agent_positions[agent_handle]
-        new_agent_position = curret_agent_position.get_new_position(action)
+        current_position = self.agent_positions[agent_handle]
+        new_position = current_position.get_new_position(action)
 
         # If move is not feasible the agent stands still
-        if not self._is_move_feasible(new_agent_position):
-            return curret_agent_position
+        if not self._is_move_feasible(new_position):
+            return current_position
 
-        # If move is feasible, set the previous position as empty
-        # and the new position as occupied
-        self.grid[
-            curret_agent_position.x, curret_agent_position.y
-        ] = GridCell.EMPTY.value
-        self.grid[new_agent_position.x, new_agent_position.y] = GridCell.AGENT.value
-        return new_agent_position
+        return new_position
+
+    def _move_agent(self, agent_handle, new_position):
+        """
+        Set the previous position as empty and the new one as occupied
+        """
+        assert isinstance(
+            new_position, AgentPosition
+        ), "The given position should be an instance of AgentPosition"
+        current_position = self.agent_positions[agent_handle]
+        self.grid[current_position.x, current_position.y] = GridCell.EMPTY.value
+        self.grid[new_position.x, new_position.y] = GridCell.AGENT.value
 
     def _is_move_feasible(self, position):
         """
@@ -381,31 +403,132 @@ class CPRGridEnv(gym.Env):
         """
         return len(self.grid[self.grid == GridCell.RESOURCE.value]) == 0
 
-    def extract_fov(self, matrix, center_index, window_size, pad=0):
+    def _get_observation(self, agent_handle):
         """
-        Extract a patch of size window_size from the given matrix centered around
-        the specified position and pad external values with the given fill value
+        Extract a rectangular FOV based on the given agent's position
+        and convert it into an RGB image
         """
-        # Window is entirely contained in the given matrix
-        m, n = matrix.shape
-        offset = window_size // 2
-        yl, yu = center_index[0] - offset, center_index[0] + offset
-        xl, xu = center_index[1] - offset, center_index[1] + offset
-        if xl >= 0 and xu < n and yl >= 0 and yu < m:
-            return np.array(matrix[yl : yu + 1, xl : xu + 1], dtype=matrix.dtype)
+        # Extract the FOV
+        fov = self._extract_fov(agent_handle)
 
-        # Window has to be padded
-        window = np.full((window_size, window_size), pad, dtype=matrix.dtype)
-        c_yl, c_yu = np.clip(yl, 0, m), np.clip(yu, 0, m)
-        c_xl, c_xu = np.clip(xl, 0, n), np.clip(xu, 0, n)
-        sub = matrix[c_yl : c_yu + 1, c_xl : c_xu + 1]
-        w_yl = 0 if yl >= 0 else abs(yl)
-        w_yu = window_size if yu < m else window_size - (yu - m) - 1
-        w_xl = 0 if xl >= 0 else abs(xl)
-        w_xu = window_size if xu < n else window_size - (xu - n) - 1
-        window[w_yl:w_yu, w_xl:w_xu] = sub
-        return window
+        # Convert the FOV to 3 channels
+        fov = np.stack((fov,) * 3, axis=-1)
 
+        # Set a different color for the agent that we are computing the FOV for
+        fov[self.fov_squares_side, 0] = colors.to_rgb(self.FOV_OWN_AGENT_COLOR)
+
+        # Set colors for resources and other agents
+        fov[fov == GridCell.RESOURCE] = colors.to_rgb(
+            self.GRID_CELL_COLORS[GridCell.RESOURCE]
+        )
+        fov[fov == GridCell.AGENT] = colors.to_rgb(
+            self.GRID_CELL_COLORS[GridCell.AGENT]
+        )
+
+        return fov
+
+    def _respawn_resources(self):
+        """
+        Respawn resources based on the number of already-spawned resources
+        in a ball centered around each currently empty location
+        """
+        for x, y in zip(range(self.grid_width), range(self.grid_height)):
+            if self.grid[x, y] == GridCell.EMPTY.value:
+                l = len(self._extract_ball(x, y))
+                p = self._respawn_probability(l)
+                if np.random.binomial(1, p):
+                    self.grid[x, y] = GridCell.RESOURCE.value
+
+    def _respawn_probability(self, l):
+        """
+        Compute the respawn probability of a resource in an unspecified
+        location based on the number of nearby resources
+        """
+        if l == 1 or l == 2:
+            return 0.01
+        elif l == 3 or l == 4:
+            return 0.05
+        elif l > 4:
+            return 0.1
+        return 0
+
+    def _pad_grid(self, x, y, xl, yl):
+        """
+        Pad the 2D grid by computing pad widths based
+        on the given position and span lenghts in both axes
+        """
+        x_pad_width = max(
+            abs(x - xl),
+            abs(self.grid_width - x - xl),
+        )
+        y_pad_width = max(
+            abs(y - yl),
+            abs(self.grid_height - y - yl),
+        )
+        return np.pad(
+            self.grid,
+            pad_width=[x_pad_width, y_pad_width],
+            mode="constant",
+            constant_values=GridCell.EMPTY.value,
+        )
+
+    def _extract_fov(self, agent_handle):
+        """
+        Extract a rectangular local observation from the 2D grid,
+        from the point of view of the given agent
+        """
+        # Pad the 2D grid so as not have indexing errors in FOV extraction
+        agent_position = self.agent_positions[agent_handle]
+        padded_grid = self._pad_grid(
+            agent_position.x,
+            agent_position.y,
+            self.fov_squares_side,
+            self.fov_squares_front,
+        )
+
+        # Extract the FOV
+        sx, ex = (
+            agent_position.x - self.fov_squares_side,
+            agent_position.x + self.fov_squares_side + 1,
+        )
+        sy, ey = agent_position.y, agent_position.y + self.fov_squares_front + 1
+        fov = padded_grid[sx:ex, sy:ey]
+        assert fov.shape == (
+            self.fov_squares_front,
+            self.fov_squares_side * 2 + 1,
+        ), "There was an error in FOV extraction, incorrect shape"
+
+        return fov
+
+    def _extract_ball(self, x, y):
+        """
+        Extract a ball-shaped local patch from the 2D grid,
+        centered around the given position
+        """
+        # Pad the 2D grid so as not have indexing errors in ball extraction
+        padded_grid = self._pad_grid(
+            x,
+            y,
+            self.ball_radius,
+            self.ball_radius,
+        )
+
+        # Extract the ball
+        sx, ex = x - self.ball_radius, x + self.ball_radius + 1
+        sy, ey = y - self.ball_radius, y + self.ball_radius + 1
+        ball = padded_grid[sx:ex, sy:ey]
+
+        # Compute a boolean mask shaped like a ball
+        # (see https://stackoverflow.com/questions/8647024/how-to-apply-a-disc-shaped-mask-to-a-numpy-array)
+        kernel = np.zeros((2 * self.ball_radius + 1, 2 * self.ball_radius + 1))
+        yg, xg = np.ogrid[
+            -self.ball_radius : self.ball_radius + 1,
+            -self.ball_radius : self.ball_radius + 1,
+        ]
+        mask = xg ** 2 + yg ** 2 <= self.ball_radius ** 2
+        kernel[mask] = 1
+
+        return ball[kernel]
 
     def render(self, mode="human"):
         """
