@@ -74,9 +74,8 @@ class CPRGridEnv(gym.Env):
             dtype=np.uint8,
         )
 
-        self.elapsed_steps = None
-        self.agent_positions = None
-        self.grid = None
+        self.elapsed_steps, self.agent_positions, self.grid = None, None, None
+        self._rendered_img = None
         self.reset()
 
     def reset(self):
@@ -405,25 +404,42 @@ class CPRGridEnv(gym.Env):
 
         return ball[kernel.astype(bool)]
 
+    def plot(self, img, map_colors=True):
+        """
+        Plot the given image in a standard way
+        """
+        fig, ax = plt.subplots(figsize=self.FIGSIZE)
+        img = ax.imshow(
+            img,
+            cmap=self.COLORMAP if map_colors else None,
+            norm=self.COLOR_BOUNDARIES if map_colors else None,
+            origin="upper",
+        )
+        ax.axis("off")
+        return fig, ax, img
+
     def plot_observation(self, obs):
         """
         Plot the given observation as an RGB image
         """
-        _, ax = plt.subplots(figsize=self.FIGSIZE)
-        ax.imshow(obs * 255.0, origin="upper")
-        ax.axis("off")
+        self.plot(obs * 255.0, map_colors=False)
         plt.show()
 
     def render(self, mode="human"):
         """
         Render the environment as an RGB image
         """
-        _, ax = plt.subplots(figsize=self.FIGSIZE)
-        ax.imshow(
-            self.grid, cmap=self.COLORMAP, norm=self.COLOR_BOUNDARIES, origin="upper"
-        )
-        ax.axis("off")
+        fig, _, _ = self.plot(self.grid)
+        if mode == "rgb_array":
+            fig.canvas.draw()
+            data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep="")
+            data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+            plt.close()
+            return data
         plt.show()
 
     def close(self):
-        return
+        """
+        Close all open rendering figures
+        """
+        plt.close()
