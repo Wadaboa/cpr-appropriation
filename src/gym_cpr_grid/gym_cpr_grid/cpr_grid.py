@@ -17,6 +17,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
     """
 
     # Rewards
+    NO_RESOURCE_COLLECTION_REWARD = 0
     RESOURCE_COLLECTION_REWARD = 1
 
     # Colors
@@ -139,7 +140,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
 
         # Initiliaze variables
         observations = {h: None for h in range(self.n_agents)}
-        rewards = {h: -self.RESOURCE_COLLECTION_REWARD for h in range(self.n_agents)}
+        rewards = {h: self.NO_RESOURCE_COLLECTION_REWARD for h in range(self.n_agents)}
         dones = {h: False for h in range(self.n_agents)}
         infos = {h: dict() for h in range(self.n_agents)}
 
