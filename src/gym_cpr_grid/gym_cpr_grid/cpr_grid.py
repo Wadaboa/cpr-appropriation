@@ -1,3 +1,4 @@
+import time
 import random
 import itertools
 
@@ -46,6 +47,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         fov_squares_front=20,
         fov_squares_side=10,
         tagging_ability=True,
+        tagging_steps=25,
         beam_squares_front=20,
         beam_squares_width=5,
         ball_radius=2,
@@ -53,17 +55,20 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
     ):
         super(CPRGridEnv, self).__init__()
 
+        # Parameters
         self.n_agents = n_agents
         self.grid_width = grid_width
         self.grid_height = grid_height
         self.fov_squares_front = fov_squares_front
         self.fov_squares_side = fov_squares_side
         self.tagging_ability = tagging_ability
+        self.tagging_steps = tagging_steps
         self.beam_squares_front = beam_squares_front
-        self.beam_squares_width = beam_squares_width
+        self.beam_squares_side = beam_squares_width // 2
         self.ball_radius = ball_radius
         self.max_steps = max_steps
 
+        # Gym requirements
         self.action_space = utils.CPRGridActionSpace()
         self.observation_space = spaces.Box(
             low=0,
@@ -76,7 +81,13 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             dtype=np.uint8,
         )
 
-        self.elapsed_steps, self.agent_positions, self.grid = None, None, None
+        # Dynamic variables
+        self.elapsed_steps, self.agent_positions, self.grid, self.tagged_agents = (
+            None,
+            None,
+            None,
+            None,
+        )
 
     def reset(self):
         """
@@ -87,6 +98,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         self.elapsed_steps = 0
         self.agent_positions = [self._random_position() for _ in range(self.n_agents)]
         self.grid = self._get_initial_grid()
+        self.tagged_agents = dict()
 
         # Compute observations for each agent
         observations = {h: None for h in range(self.n_agents)}
@@ -145,16 +157,46 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         infos = {h: dict() for h in range(self.n_agents)}
 
         # Move all agents
+        tagged_agents = []
         for agent_handle, action in action_dict.items():
-            # Compute new position
-            new_agent_position = self._compute_new_agent_position(agent_handle, action)
+            # Perform the action only if not previously tagged
+            if (
+                self.tagging_ability and agent_handle not in tagged_agents
+            ) or not self.tagging_ability:
+                # Compute new position
+                new_agent_position = self._compute_new_agent_position(
+                    agent_handle, action
+                )
 
-            # Assign reward for resource collection
-            if self._has_resource(new_agent_position):
-                rewards[agent_handle] = self.RESOURCE_COLLECTION_REWARD
+                # Assign reward for resource collection
+                if self._has_resource(new_agent_position):
+                    rewards[agent_handle] = self.RESOURCE_COLLECTION_REWARD
 
-            # Move the agent only after checking for resource presence
-            self._move_agent(agent_handle, new_agent_position)
+                # Move the agent only after checking for resource presence
+                self._move_agent(agent_handle, new_agent_position)
+
+                # Tag agents
+                if self.tagging_ability and action == utils.AgentAction.TAG:
+                    tagged_agents += [self._tag(agent_handle)]
+
+        # Store the tagged agents and free the ones that were
+        # tagged more than the specified timesteps ago
+        for agent_handle in range(self.n_agents):
+            if agent_handle in self.tagged_agents:
+                self.tagged_agents[agent_handle] -= 1
+                if self.tagged_agents[agent_handle] == 0:
+                    del self.tagged_agents[agent_handle]
+            elif agent_handle in tagged_agents:
+                self.tagged_agents[agent_handle] = self.tagging_steps
+
+        # Add tagging information to return dictionaries
+        for agent_handle in range(self.n_agents):
+            tagged = agent_handle in self.tagged_agents
+            infos[agent_handle]["tagged"] = tagged
+            if tagged:
+                infos[agent_handle]["remaining_tagged_steps"] = self.tagged_agents[
+                    agent_handle
+                ]
 
         # Check if we reached end of episode
         dones["__all__"] = False
@@ -250,6 +292,25 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         """
         return len(self.grid[self.grid == utils.GridCell.RESOURCE.value]) == 0
 
+    def _tag(self, agent_handle):
+        """
+        Perform the tagging action from the point of view of the given agent,
+        by marking agents in the beam trajectory for future timesteps
+        """
+        # Create a grid with the same size as the original one,
+        # but only containing agent handles
+        agents_grid = np.full((self.grid_height, self.grid_width), -1)
+        for h, agent_position in enumerate(self.agent_positions):
+            if h != agent_handle:
+                agents_grid[agent_position.y, agent_position.x] = h
+
+        # Extract the beam FOV from the agent handles grid
+        # and find the tagged agents
+        fov = self._extract_fov(agent_handle, grid=agents_grid, beam=True, pad_value=-1)
+        tagged_agents = fov[fov != -1]
+
+        return tagged_agents
+
     def _get_observation(self, agent_handle):
         """
         Extract a rectangular FOV based on the given agent's position
@@ -299,7 +360,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             return 0.1
         return 0
 
-    def _pad_grid(self, grid, x, y, xl, yl):
+    def _pad_grid(self, grid, x, y, xl, yl, pad_value=0):
         """
         Pad the 2D grid by computing pad widths based
         on the given position and span lenghts in both axes
@@ -316,11 +377,11 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             grid,
             pad_width=[y_pad_width, x_pad_width],
             mode="constant",
-            constant_values=utils.GridCell.EMPTY.value,
+            constant_values=pad_value,
         )
         return padded_grid, x_pad_width, y_pad_width
 
-    def _extract_fov(self, agent_handle):
+    def _extract_fov(self, agent_handle, grid=None, beam=False, pad_value=None):
         """
         Extract a rectangular local observation from the 2D grid,
         from the point of view of the given agent
@@ -329,7 +390,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         agent_position = self.agent_positions[agent_handle]
 
         # Rotate the grid based on agent's orientation
-        grid = self.grid.copy()
+        grid = grid if grid is not None else self.grid.copy()
         k = (
             1
             if agent_position.o == utils.AgentOrientation.LEFT
@@ -352,28 +413,34 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             & (rotated_coords[:, :, 1] == agent_position.x)
         )[0]
 
+        # Set front and side squares to extract based on whether we are
+        # computing the FOV for the observation or for tagging other agents
+        squares_front = self.fov_squares_front if not beam else self.beam_squares_front
+        squares_side = self.fov_squares_side if not beam else self.beam_squares_side
+
         # Pad the 2D grid so as not have indexing errors in FOV extraction
         padded_grid, x_pad_width, y_pad_width = self._pad_grid(
             rotated_grid,
             rotated_x,
             rotated_y,
-            self.fov_squares_side,
-            self.fov_squares_front + k % 2,
+            squares_side,
+            squares_front + k % 2,
+            pad_value=pad_value or utils.GridCell.EMPTY.value,
         )
 
         # Extract the FOV
         sx, ex = (
-            x_pad_width[0] + rotated_x - self.fov_squares_side,
-            x_pad_width[0] + rotated_x + self.fov_squares_side + 1,
+            x_pad_width[0] + rotated_x - squares_side,
+            x_pad_width[0] + rotated_x + squares_side + 1,
         )
         sy, ey = (
             y_pad_width[0] + rotated_y,
-            y_pad_width[0] + rotated_y + self.fov_squares_front,
+            y_pad_width[0] + rotated_y + squares_front,
         )
         fov = padded_grid[sy:ey, sx:ex]
         assert fov.shape == (
-            self.fov_squares_front,
-            self.fov_squares_side * 2 + 1,
+            squares_front,
+            squares_side * 2 + 1,
         ), "There was an error in FOV extraction, incorrect shape"
 
         return fov
@@ -390,6 +457,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             y,
             self.ball_radius,
             self.ball_radius,
+            pad_value=utils.GridCell.EMPTY.value,
         )
 
         # Extract the ball
