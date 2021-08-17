@@ -419,3 +419,7 @@ TSWLatexianTemp*
 
 # VSCode
 .vscode/
+
+# W&B API key file
+wandb_api_key_file
+wandb/
