@@ -34,25 +34,37 @@ class SocialOutcomeMetrics(DefaultCallbacks):
         numerator = np.sum([abs(ri - rj) for ri in returns for rj in returns])
         return 1 - (numerator / (2 * len(returns) * np.sum(returns) + eps))
 
-    def sustainability_metric(self, episode, max_steps):
+    def sustainability_metric(self, episode, base_env):
         """
         The Sustainability metric (S) is defined as the average
         time at which the rewards are collected
         """
         times = []
+        max_steps = base_env.envs[0].max_steps
         for agent_handle in episode.get_agents():
             rewards = episode._agent_reward_history[agent_handle]
             ti = np.argwhere(np.array(rewards) > 0)
             times.append(max_steps if len(ti) == 0 else np.mean(ti))
         return np.mean(times)
 
-    def peace_metric(self, episode):
+    def peace_metric(self, episode, base_env):
         """
         The Peace metric (P) is defined as the average number of
         untagged agent steps
         """
-        # TODO: implement tagging action and metric
-        return 0
+        if not base_env.envs[0].tagging_ability:
+            return np.nan
+        total = 0
+        tagging_history = base_env.envs[0].tagging_history
+        n_agents = len(episode.get_agents())
+        for agent_handle in range(n_agents):
+            total += np.sum(
+                [
+                    int(agent_handle in tagging_checkpoint)
+                    for tagging_checkpoint in tagging_history
+                ]
+            )
+        return (n_agents * episode.length - total) / episode.length
 
     def on_episode_start(
         self, *, worker, base_env, policies, episode, env_index, **kwargs
@@ -99,11 +111,11 @@ class SocialOutcomeMetrics(DefaultCallbacks):
         episode.user_data["equalities"].append(equality)
 
         # Compute sustainability metric
-        sustainability = self.sustainability_metric(episode, base_env.envs[0].max_steps)
+        sustainability = self.sustainability_metric(episode, base_env)
         episode.user_data["sustainabilities"].append(sustainability)
 
         # Compute peace metric
-        peace = self.peace_metric(episode)
+        peace = self.peace_metric(episode, base_env)
         episode.user_data["peaces"].append(peace)
 
     def on_episode_end(

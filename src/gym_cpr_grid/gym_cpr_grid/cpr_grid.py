@@ -82,12 +82,13 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         )
 
         # Dynamic variables
-        self.elapsed_steps, self.agent_positions, self.grid, self.tagged_agents = (
-            None,
-            None,
-            None,
-            None,
-        )
+        (
+            self.elapsed_steps,
+            self.agent_positions,
+            self.grid,
+            self.tagged_agents,
+            self.tagging_history,
+        ) = (None, None, None, None, None)
 
     def reset(self):
         """
@@ -99,6 +100,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         self.agent_positions = [self._random_position() for _ in range(self.n_agents)]
         self.grid = self._get_initial_grid()
         self.tagged_agents = dict()
+        self.tagging_history = [dict(self.tagged_agents)]
 
         # Compute observations for each agent
         observations = {h: None for h in range(self.n_agents)}
@@ -177,7 +179,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
 
                 # Tag agents
                 if self.tagging_ability and action == utils.AgentAction.TAG:
-                    tagged_agents += [self._tag(agent_handle)]
+                    tagged_agents += self._tag(agent_handle)
 
         # Store the tagged agents and free the ones that were
         # tagged more than the specified timesteps ago
@@ -190,6 +192,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
                 self.tagged_agents[agent_handle] = self.tagging_steps
 
         # Add tagging information to return dictionaries
+        self.tagging_history += [dict(self.tagged_agents)]
         for agent_handle in range(self.n_agents):
             tagged = agent_handle in self.tagged_agents
             infos[agent_handle]["tagged"] = tagged
@@ -309,7 +312,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         fov = self._extract_fov(agent_handle, grid=agents_grid, beam=True, pad_value=-1)
         tagged_agents = fov[fov != -1]
 
-        return tagged_agents
+        return list(tagged_agents)
 
     def _get_observation(self, agent_handle):
         """
