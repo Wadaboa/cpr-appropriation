@@ -6,11 +6,12 @@ import matplotlib.pyplot as plt
 import gym
 from gym import spaces
 from matplotlib import colors
+from ray.rllib.env.multi_agent_env import MultiAgentEnv
 
 from . import utils
 
 
-class CPRGridEnv(gym.Env):
+class CPRGridEnv(MultiAgentEnv, gym.Env):
     """
     Defines the CPR appropriation Gym environment
     """
@@ -75,16 +76,23 @@ class CPRGridEnv(gym.Env):
         )
 
         self.elapsed_steps, self.agent_positions, self.grid = None, None, None
-        self.reset()
 
     def reset(self):
         """
         Spawns a new environment by assigning random positions to the agents
         and initializing a new 2D grid
         """
+        # Reset variables
         self.elapsed_steps = 0
         self.agent_positions = [self._random_position() for _ in range(self.n_agents)]
         self.grid = self._get_initial_grid()
+
+        # Compute observations for each agent
+        observations = {h: None for h in range(self.n_agents)}
+        for agent_handle in range(self.n_agents):
+            observations[agent_handle] = self._get_observation(agent_handle)
+
+        return observations
 
     def _random_position(self):
         """
@@ -120,23 +128,23 @@ class CPRGridEnv(gym.Env):
 
         return grid
 
-    def step(self, actions):
+    def step(self, action_dict):
         """
         Perform a step in the environment by moving all the agents
         and return one observation for each agent
         """
         assert (
-            isinstance(actions, list) and len(actions) == self.n_agents
-        ), "Actions should be given as a list with lenght equal to the number of agents"
+            isinstance(action_dict, dict) and len(action_dict) == self.n_agents
+        ), "Actions should be given as a dictionary with lenght equal to the number of agents"
 
         # Initiliaze variables
-        observations = {h: None for h in self.n_agents}
+        observations = {h: None for h in range(self.n_agents)}
         rewards = {h: -self.RESOURCE_COLLECTION_REWARD for h in range(self.n_agents)}
         dones = {h: False for h in range(self.n_agents)}
         infos = {h: dict() for h in range(self.n_agents)}
 
         # Move all agents
-        for agent_handle, action in enumerate(actions):
+        for agent_handle, action in action_dict.items():
             # Compute new position
             new_agent_position = self._compute_new_agent_position(agent_handle, action)
 
@@ -148,9 +156,11 @@ class CPRGridEnv(gym.Env):
             self._move_agent(agent_handle, new_agent_position)
 
         # Check if we reached end of episode
+        dones["__all__"] = False
         self.elapsed_steps += 1
         if self._is_resource_depleted() or self.elapsed_steps == self.max_steps:
             dones = {h: True for h in range(self.n_agents)}
+            dones["__all__"] = True
 
         # Compute observations for each agent
         for agent_handle in range(self.n_agents):

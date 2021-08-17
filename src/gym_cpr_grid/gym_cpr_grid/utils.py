@@ -1,6 +1,7 @@
 import random
 from enum import IntEnum
 
+import numpy as np
 from gym import spaces
 
 
@@ -37,7 +38,7 @@ class AgentAction(IntEnum):
         """
         Check if the given action is valid
         """
-        if isinstance(action, int):
+        if isinstance(action, int) or isinstance(action, np.int64):
             return action in cls.values()
         elif isinstance(action, AgentAction):
             return action in cls.__members__.keys()
@@ -213,9 +214,11 @@ class AgentPosition:
         """
         Given an action, return the new position of the agent
         """
-        assert isinstance(
-            action, AgentAction
-        ), "The given action must be an instance of AgentAction"
+        assert AgentAction.is_valid(
+            action
+        ), f"The given action should be compatible with AgentAction, {action} {AgentAction.values()}, {type(action)}"
+        if isinstance(action, int) or isinstance(action, np.int64):
+            action = AgentAction(action)
         return getattr(self, action.name.lower())()
 
     def __repr__(self):
