@@ -1,4 +1,3 @@
-import time
 import random
 import itertools
 
@@ -48,11 +47,15 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         fov_squares_side=10,
         tagging_ability=True,
         tagging_steps=25,
-        beam_squares_front=20,
+        beam_squares_front=10,
         beam_squares_width=5,
         ball_radius=2,
         max_steps=1000,
+        initial_resource_probability=0.1,
     ):
+        assert (
+            grid_width % 2 != 0 and grid_height % 2 != 0
+        ), "Grid dimensions should be odd"
         super(CPRGridEnv, self).__init__()
 
         # Parameters
@@ -67,6 +70,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         self.beam_squares_side = beam_squares_width // 2
         self.ball_radius = ball_radius
         self.max_steps = max_steps
+        self.initial_resource_probability = initial_resource_probability
 
         # Gym requirements
         self.action_space = utils.CPRGridActionSpace()
@@ -129,10 +133,12 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         for agent_position in self.agent_positions:
             grid[agent_position.y, agent_position.x] = utils.GridCell.AGENT.value
 
-        # Compute uniformely distributed resources
-        resource_mask = np.random.randint(
-            low=0, high=2, size=(self.grid_height, self.grid_width), dtype=bool
-        )
+        # Compute initial resources
+        resource_mask = np.random.binomial(
+            1,
+            self.initial_resource_probability,
+            size=(self.grid_height, self.grid_width),
+        ).astype(bool)
         ys, xs = resource_mask.nonzero()
         resource_indices = list(zip(list(xs), list(ys)))
 
@@ -345,7 +351,8 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         """
         for x, y in itertools.product(range(self.grid_width), range(self.grid_height)):
             if self.grid[y, x] == utils.GridCell.EMPTY.value:
-                l = len(self._extract_ball(x, y))
+                ball = self._extract_ball(x, y)
+                l = len(ball[ball == utils.GridCell.RESOURCE.value])
                 p = self._respawn_probability(l)
                 if np.random.binomial(1, p):
                     self.grid[y, x] = utils.GridCell.RESOURCE.value

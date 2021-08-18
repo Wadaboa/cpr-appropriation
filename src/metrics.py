@@ -23,8 +23,7 @@ class SocialOutcomeMetrics(DefaultCallbacks):
         of sum of rewards
         """
         returns = self._get_returns(episode)
-        # TODO: check correctness of calculation
-        return np.mean(returns) / episode.length
+        return np.sum(returns) / episode.length
 
     def equality_metric(self, episode, eps=1e-6):
         """
