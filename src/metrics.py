@@ -5,6 +5,10 @@ from ray.rllib.agents.callbacks import DefaultCallbacks
 class SocialOutcomeMetrics(DefaultCallbacks):
     """
     Define the 4 social outcome metrics as described in the paper
+
+    J. Perolat, J. Leibo, V. Zambaldi, C. Beattie, K. Tuyls, T. Graepel
+    "A multi-agent reinforcement learning model of common-pool resource appropriation",
+    CoRR, 2017.
     """
 
     def _get_returns(self, episode):

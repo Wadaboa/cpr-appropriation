@@ -13,12 +13,16 @@ from . import utils
 
 class CPRGridEnv(MultiAgentEnv, gym.Env):
     """
-    Defines the CPR appropriation Gym environment
+    Defines the CPR appropriation (Harvest) Gym environment as described in the paper
+
+    J. Perolat, J. Leibo, V. Zambaldi, C. Beattie, K. Tuyls, T. Graepel
+    "A multi-agent reinforcement learning model of common-pool resource appropriation",
+    CoRR, 2017.
     """
 
     # Rewards
-    NO_RESOURCE_COLLECTION_REWARD = 0
     RESOURCE_COLLECTION_REWARD = 1
+    GIFTING_REWARD = 1
 
     # Colors
     GRID_CELL_COLORS = {
@@ -52,10 +56,15 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         ball_radius=2,
         max_steps=1000,
         initial_resource_probability=0.1,
+        gifting_mechanism=None,
+        gifting_fixed_budget_size=40,
     ):
         assert (
             grid_width % 2 != 0 and grid_height % 2 != 0
         ), "Grid dimensions should be odd"
+        assert gifting_mechanism is None or utils.GiftingMechanism.is_valid(
+            gifting_mechanism
+        ), "The given gifting mechanism is not valid"
         super(CPRGridEnv, self).__init__()
 
         # Parameters
@@ -71,6 +80,13 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         self.ball_radius = ball_radius
         self.max_steps = max_steps
         self.initial_resource_probability = initial_resource_probability
+        self.gifting_mechanism = (
+            utils.GiftingMechanism(gifting_mechanism)
+            if isinstance(gifting_mechanism, int)
+            or isinstance(gifting_mechanism, np.int64)
+            else gifting_mechanism
+        )
+        self.gifting_fixed_budget_size = gifting_fixed_budget_size
 
         # Gym requirements
         self.action_space = utils.CPRGridActionSpace()
@@ -92,7 +108,9 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             self.grid,
             self.tagged_agents,
             self.tagging_history,
-        ) = (None, None, None, None, None)
+            self.collected_resources,
+            self.gifting_budget,
+        ) = (None, None, None, None, None, None, None)
 
     def reset(self):
         """
@@ -105,6 +123,17 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         self.grid = self._get_initial_grid()
         self.tagged_agents = dict()
         self.tagging_history = [dict(self.tagged_agents)]
+        self.collected_resources = {h: 0 for h in range(self.n_agents)}
+
+        # Initialize gifting budget based on the chosen gifting mechanism
+        if self.gifting_mechanism == utils.GiftingMechanism.ZERO_SUM:
+            self.gifting_budget = {h: np.inf for h in range(self.n_agents)}
+        elif self.gifting_mechanism == utils.GiftingMechanism.FIXED_BUDGET:
+            self.gifting_budget = {
+                h: self.gifting_fixed_budget_size for h in range(self.n_agents)
+            }
+        else:
+            self.gifting_budget = {h: 0 for h in range(self.n_agents)}
 
         # Compute observations for each agent
         observations = {h: None for h in range(self.n_agents)}
@@ -160,12 +189,12 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
 
         # Initiliaze variables
         observations = {h: None for h in range(self.n_agents)}
-        rewards = {h: self.NO_RESOURCE_COLLECTION_REWARD for h in range(self.n_agents)}
+        rewards = {h: 0 for h in range(self.n_agents)}
         dones = {h: False for h in range(self.n_agents)}
         infos = {h: dict() for h in range(self.n_agents)}
 
         # Move all agents
-        tagged_agents = []
+        tagged_agents, gifting_agents, gifted_agents = [], [], []
         for agent_handle, action in action_dict.items():
             # Perform the action only if not previously tagged
             if (
@@ -178,14 +207,48 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
 
                 # Assign reward for resource collection
                 if self._has_resource(new_agent_position):
-                    rewards[agent_handle] = self.RESOURCE_COLLECTION_REWARD
+                    self.collected_resources[agent_handle] += 1
+                    rewards[agent_handle] += self.RESOURCE_COLLECTION_REWARD
 
                 # Move the agent only after checking for resource presence
                 self._move_agent(agent_handle, new_agent_position)
 
                 # Tag agents
                 if self.tagging_ability and action == utils.AgentAction.TAG:
-                    tagged_agents += self._tag(agent_handle)
+                    tagged_agents += self._agents_in_beam_trajectory(agent_handle)
+
+                # Gift other agents
+                if (
+                    self.gifting_mechanism is not None
+                    and action == utils.AgentAction.GIFT
+                ):
+                    # Gift each agent in the beam trajectory equally
+                    # (only if we have enough gifting budget left)
+                    if self.gifting_budget[agent_handle] > 0:
+                        # Penalize the gifting agent only in the zero-sum case
+                        gifting_agents += [agent_handle]
+                        if self.gifting_mechanism == utils.GiftingMechanism.ZERO_SUM:
+                            rewards[agent_handle] -= self.GIFTING_REWARD
+
+                        # Reduce the gifting budget and send gifts to agents
+                        # in the beam trajectory
+                        self.gifting_budget[agent_handle] -= self.GIFTING_REWARD
+                        agents_to_gift = self._agents_in_beam_trajectory(agent_handle)
+                        gifted_agents += agents_to_gift
+                        for agent_to_gift in agents_to_gift:
+                            rewards[agent_to_gift] += self.GIFTING_REWARD / len(
+                                agents_to_gift
+                            )
+
+                    # Replenish the budget by 1 resource after colleting 2 resources
+                    # (only if replenishable budget is chosen)
+                    if (
+                        self.gifting_mechanism
+                        == utils.GiftingMechanism.REPLENISHABLE_BUDGET
+                        and self.collected_resources[agent_handle] % 2 == 0
+                        and self.collected_resources[agent_handle] != 0
+                    ):
+                        self.gifting_budget[agent_handle] += 1
 
         # Store the tagged agents and free the ones that were
         # tagged more than the specified timesteps ago
@@ -197,15 +260,20 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             elif agent_handle in tagged_agents:
                 self.tagged_agents[agent_handle] = self.tagging_steps
 
-        # Add tagging information to return dictionaries
+        # Fill-up the infos dictionary with extra information
         self.tagging_history += [dict(self.tagged_agents)]
         for agent_handle in range(self.n_agents):
+            # Add tagging information
             tagged = agent_handle in self.tagged_agents
             infos[agent_handle]["tagged"] = tagged
             if tagged:
                 infos[agent_handle]["remaining_tagged_steps"] = self.tagged_agents[
                     agent_handle
                 ]
+
+            # Add gifting information
+            infos[agent_handle]["gifting"] = agent_handle in gifting_agents
+            infos[agent_handle]["gifted"] = agent_handle in gifted_agents
 
         # Check if we reached end of episode
         dones["__all__"] = False
@@ -301,7 +369,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         """
         return len(self.grid[self.grid == utils.GridCell.RESOURCE.value]) == 0
 
-    def _tag(self, agent_handle):
+    def _agents_in_beam_trajectory(self, agent_handle):
         """
         Perform the tagging action from the point of view of the given agent,
         by marking agents in the beam trajectory for future timesteps

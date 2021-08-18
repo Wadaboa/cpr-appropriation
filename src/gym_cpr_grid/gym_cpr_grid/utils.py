@@ -5,7 +5,66 @@ import numpy as np
 from gym import spaces
 
 
-class AgentAction(IntEnum):
+class CustomIntEnum(IntEnum):
+    """
+    IntEnum with utility functions
+    """
+
+    @classmethod
+    def random(cls):
+        """
+        Return a random value out of the possible ones
+        """
+        return cls(random.randint(0, cls.size() - 1))
+
+    @classmethod
+    def keys(cls):
+        """
+        Return all possible keys as strings
+        """
+        return list(cls.__members__.keys())
+
+    @classmethod
+    def values(cls):
+        """
+        Return all possible values as integers
+        """
+        return [v.value for v in cls.__members__.values()]
+
+    @classmethod
+    def is_valid(cls, x):
+        """
+        Check if the given value is valid
+        """
+        if isinstance(x, int) or isinstance(x, np.int64):
+            return x in cls.values()
+        elif isinstance(x, cls):
+            return x in cls.keys()
+        return False
+
+    @classmethod
+    def size(cls):
+        """
+        Return the number of possible values
+        """
+        return len(cls.__members__)
+
+    @classmethod
+    def equals(cls, x, y):
+        """
+        Check if the given values are the same
+        """
+        assert cls.is_valid(x) and cls.is_valid(
+            y
+        ), "The given inputs are not valid values"
+        if (isinstance(x, int) or isinstance(x, np.int64)) and isinstance(y, cls):
+            return x == y.value
+        elif (isinstance(y, int) or isinstance(y, np.int64)) and isinstance(x, cls):
+            return x.value == y
+        return x == y
+
+
+class AgentAction(CustomIntEnum):
     """
     Defines the action of an agent
     """
@@ -18,38 +77,7 @@ class AgentAction(IntEnum):
     ROTATE_RIGHT = 5
     STAND_STILL = 6
     TAG = 7
-
-    @classmethod
-    def random(cls):
-        """
-        Return a random action out of the 8 possible values
-        """
-        return AgentAction(random.randint(0, cls.size() - 1))
-
-    @classmethod
-    def values(cls):
-        """
-        Return all possible values as integers
-        """
-        return [v.value for v in cls.__members__.values()]
-
-    @classmethod
-    def is_valid(cls, action):
-        """
-        Check if the given action is valid
-        """
-        if isinstance(action, int) or isinstance(action, np.int64):
-            return action in cls.values()
-        elif isinstance(action, AgentAction):
-            return action in cls.__members__.keys()
-        return False
-
-    @classmethod
-    def size(cls):
-        """
-        Return the number of possible actions (i.e. 8)
-        """
-        return len(cls.__members__)
+    GIFT = 8
 
 
 class CPRGridActionSpace(spaces.Discrete):
@@ -79,7 +107,7 @@ class CPRGridActionSpace(spaces.Discrete):
         return isinstance(other, CPRGridActionSpace)
 
 
-class AgentOrientation(IntEnum):
+class AgentOrientation(CustomIntEnum):
     """
     Defines the orientation of an agent in an unspecified position,
     as the 4 cardinal directions (N, E, S, W)
@@ -101,20 +129,6 @@ class AgentOrientation(IntEnum):
         Return a new orientation after the agent rotates itself to its right
         """
         return AgentOrientation((self.value + 1) % self.size())
-
-    @classmethod
-    def random(cls):
-        """
-        Return a random orientation out of the 4 possible values
-        """
-        return AgentOrientation(random.randint(0, cls.size() - 1))
-
-    @classmethod
-    def size(cls):
-        """
-        Return the number of possible orientations (i.e. 4)
-        """
-        return len(cls.__members__)
 
 
 class AgentPosition:
@@ -233,7 +247,7 @@ class AgentPosition:
         )
 
 
-class GridCell(IntEnum):
+class GridCell(CustomIntEnum):
     """
     Defines what could fit in a cell of the 2D grid, i.e.
     either an agent or a resource or an empty cell
@@ -243,16 +257,17 @@ class GridCell(IntEnum):
     RESOURCE = 1
     AGENT = 2
 
-    @classmethod
-    def values(cls):
-        """
-        Return all possible values as integers
-        """
-        return [v.value for v in cls.__members__.values()]
 
-    @classmethod
-    def size(cls):
-        """
-        Return the number of possible cell types (i.e. 3)
-        """
-        return len(cls.__members__)
+class GiftingMechanism(CustomIntEnum):
+    """
+    Defines the different types of reward gifting mechanisms
+    as described in the paper
+
+    Andrei Lupu, Doina Precup,
+    "Gifting in Multi-Agent Reinforcement Learning",
+    International Foundation for Autonomous Agents and Multiagent Systems, 2020.
+    """
+
+    ZERO_SUM = 0
+    FIXED_BUDGET = 1
+    REPLENISHABLE_BUDGET = 2
