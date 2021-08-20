@@ -2,7 +2,10 @@ import numpy as np
 import torch
 import torch.optim as optim
 import torch.nn as nn
+from torch.distributions import Categorical
 from loguru import logger
+
+from memory import TrajectoryPool
 
 
 class VPGPolicy:
@@ -62,20 +65,40 @@ class VPGPolicy:
                 values = self.baseline_nn(states).squeeze()
 
             # Compute loss
-            advantage = (
-                (returns - values).unsqueeze(-1).repeat(1, 1, log_probs.shape[-1])
+            total_loss = self.compute_loss(
+                policy_loss,
+                baseline_loss,
+                returns,
+                actions,
+                values,
+                log_probs,
+                old_log_probs,
             )
-            total_loss = policy_loss(
-                torch.flatten(log_probs * advantage, start_dim=0, end_dim=1),
-                torch.flatten(actions),
-            )
-            if self.baseline_nn is not None:
-                total_loss += baseline_loss(values, returns)
 
             # Backprop
             optimizer.zero_grad()
             total_loss.backward()
             optimizer.step()
+
+    def compute_loss(
+        self,
+        policy_loss,
+        baseline_loss,
+        returns,
+        actions,
+        values,
+        log_probs,
+        old_log_probs=None,
+    ):
+        # Compute loss
+        advantage = (returns - values).unsqueeze(-1).repeat(1, 1, log_probs.shape[-1])
+        total_loss = policy_loss(
+            torch.flatten(log_probs * advantage, start_dim=0, end_dim=1),
+            torch.flatten(actions),
+        )
+        if self.baseline_nn is not None:
+            total_loss += baseline_loss(values, returns)
+        return total_loss
 
     def execute_episode(self):
         """
@@ -126,166 +149,77 @@ class VPGPolicy:
         return trajectories
 
 
-class TrajectoryPool:
+class TRPOPolicy(VPGPolicy):
     """
-    A trajectory pool is a set of trajectories
+    Trust Region Policy Optimization implementation
     """
 
-    def __init__(self, n=0):
-        self.trajectories = [Trajectory() for _ in range(n)]
+    def __init__(self, env, policy_nn, baseline_nn):
+        super().__init__(env, policy_nn, baseline_nn=baseline_nn)
 
-    def add(self, trajectory):
-        """
-        Add the given trajectory to the pool
-        """
-        assert isinstance(
-            trajectory, Trajectory
-        ), "The given trajectory should be an instance of the Trajectory class"
-        self.trajectories.append(trajectory)
-
-    def extend(self, trajectory_pool):
-        """
-        Extend the current trajectory pool with the given one
-        """
-        assert isinstance(
-            trajectory_pool, TrajectoryPool
-        ), "The given trajectory pool should be an instance of the TrajectoryPool class"
-        for trajectory in trajectory_pool:
-            self.add(trajectory)
-
-    def add_to_trajectory(self, i, state, action, reward, next_state):
-        """
-        Add a (s, a, r, s') tuple to the i-th trajectory in the pool
-        """
-        self.trajectories[i].add_timestep(state, action, reward, next_state)
-
-    def tensorify(self, max_steps, state_shape, discount=1, ignore_index=-100):
-        """
-        Convert the current pool of trajectories to
-        a set of PyTorch tensors
-        """
-        assert isinstance(
-            state_shape, tuple
-        ), "The given state shape should be a tuple of dimensions"
-
-        # Initialize tensors
-        states = torch.full(
-            (len(self.trajectories), max_steps, *state_shape),
-            ignore_index,
-            dtype=torch.float32,
+    def compute_loss(
+        self,
+        policy_loss,
+        baseline_loss,
+        returns,
+        actions,
+        values,
+        log_probs,
+        old_log_probs=None,
+    ):
+        advantage = (returns - values).unsqueeze(-1).repeat(1, 1, log_probs.shape[-1])
+        probs_ratio = torch.exp(log_probs - old_log_probs)
+        total_loss = policy_loss(
+            torch.flatten(probs_ratio * advantage, start_dim=0, end_dim=1),
+            torch.flatten(actions),
         )
-        actions = torch.full(
-            (len(self.trajectories), max_steps), ignore_index, dtype=torch.int64
-        )
-        returns = torch.full_like(actions, ignore_index, dtype=torch.float32)
-        next_states = torch.full_like(states, ignore_index, dtype=torch.float32)
+        total_loss += baseline_loss(values, returns)
 
-        # Update tensors for each trajectory
-        for i, trajectory in enumerate(self.trajectories):
-            t_states = trajectory.get_states(as_torch=True)
-            t_actions = trajectory.get_actions(as_torch=True)
-            t_returns = trajectory.get_returns(
-                discount=discount, to_go=True, as_torch=True
-            )
-            t_next_states = trajectory.get_next_states(as_torch=True)
-            states[i, : t_states.shape[0]] = t_states
-            actions[i, : t_actions.shape[0]] = t_actions
-            returns[i, : t_returns.shape[0]] = t_returns
-            next_states[i, : t_next_states.shape[0]] = t_next_states
+        # Add KL divergence as regularizer
 
-        return states, actions, returns, next_states
-
-    def __getitem__(self, i):
-        """
-        Return the i-th trajectory in the pool
-        """
-        return self.trajectories[i]
-
-    def __len__(self):
-        """
-        Return how many trajectories we have in the pool
-        """
-        return len(self.trajectories)
+        return total_loss
 
 
-class Trajectory:
+class PPOPolicy(VPGPolicy):
     """
-    A trajectory is a list of (s, a, r, s') tuples, that represents an
-    agent's transition from state s to state s', by taking action a and
-    observing reward r
+    Proximal Policy Optimization implementation
     """
 
-    def __init__(self):
-        self.states, self.actions, self.rewards, self.next_states = [], [], [], []
-        self.current_timestep = 0
+    def __init__(self, env, policy_nn, baseline_nn, alpha, beta, eps):
+        super().__init__(env, policy_nn, baseline_nn=baseline_nn)
+        self.alpha = alpha
+        self.beta = beta
+        self.eps = eps
 
-    def add_timestep(self, state, action, reward, next_state):
-        """
-        Add the given (s, a, r, s') tuple to the trajectory
-        """
-        self.states.append(state)
-        self.actions.append(action)
-        self.rewards.append(reward)
-        self.next_states.append(next_state)
-        self.current_timestep += 1
+    def compute_loss(
+        self,
+        policy_loss,
+        baseline_loss,
+        returns,
+        actions,
+        values,
+        log_probs,
+        old_log_probs=None,
+    ):
+        # Compute the advantage
+        advantage = (returns - values).unsqueeze(-1).repeat(1, 1, log_probs.shape[-1])
 
-    def get_states(self, as_torch=True):
-        """
-        Return the list of states in the current trajectory
-        either as a Numpy array or as a PyTorch tensor
-        """
-        return np.array(self.states) if not as_torch else torch.tensor(self.states)
+        # Compute the probability ratio
+        probs_ratio = torch.exp(log_probs - old_log_probs)
 
-    def get_actions(self, as_torch=True):
-        """
-        Return the list of actions in the current trajectory
-        either as a Numpy array or as a PyTorch tensor
-        """
-        return np.array(self.actions) if not as_torch else torch.tensor(self.actions)
-
-    def get_rewards(self, as_torch=True):
-        """
-        Return the list of rewards in the current trajectory
-        either as a Numpy array or as a PyTorch tensor
-        """
-        return np.array(self.rewards) if not as_torch else torch.tensor(self.rewards)
-
-    def get_next_states(self, as_torch=True):
-        """
-        Return the list of next states in the current trajectory
-        either as a Numpy array or as a PyTorch tensor
-        """
-        return (
-            np.array(self.next_states)
-            if not as_torch
-            else torch.tensor(self.next_states)
+        # Compute PPO loss as the minimum of the clipped and unclipped losses
+        objective = torch.min(
+            probs_ratio * advantage,
+            torch.clamp(probs_ratio, 1 - self.eps, 1 + self.eps) * advantage,
         )
 
-    def get_returns(self, max_timestep=None, discount=1, to_go=False, as_torch=True):
-        """
-        Compute returns of the current trajectory. You can compute the following return types:
-        - Finite-horizon undiscounted return: set `max_timestep=t` and `discount=1`
-        - Infinite-horizon discounted return: set `max_timestep=None` and `discount=d`, with d in (0, 1)
-        """
-        assert discount > 0 and discount <= 1, "Discount should be in (0, 1]"
-        if max_timestep is None:
-            max_timestep = self.current_timestep
-        max_timestep = np.clip(max_timestep, 0, self.current_timestep)
-        discount_per_timestep = discount ** np.arange(max_timestep)
-        returns_per_timestep = np.cumsum(
-            np.array(self.rewards)[::-1] * discount_per_timestep[::-1]
-        )[::-1]
-        returns = returns_per_timestep[0] if not to_go else returns_per_timestep
-        return returns if not as_torch else torch.tensor(returns.copy())
+        # Compute total loss as the sum of PPO loss, baseline loss and
+        # entropy of the categorical action distribution
+        total_loss = policy_loss(
+            torch.flatten(objective, start_dim=0, end_dim=1),
+            torch.flatten(actions),
+        )
+        total_loss += self.alpha * baseline_loss(values, returns)
+        total_loss += -self.beta * Categorical(probs=np.exp(log_probs)).entropy().mean()
 
-    def __getitem__(self, t):
-        """
-        Return the (s, a, r, s') tuple at time-step t
-        """
-        return (self.states[t], self.actions[t], self.rewards[t], self.next_states[t])
-
-    def __len__(self):
-        """
-        Return the lenght of the trajectory
-        """
-        return self.current_timestep
+        return total_loss
