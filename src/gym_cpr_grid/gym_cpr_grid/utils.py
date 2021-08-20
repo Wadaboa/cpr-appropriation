@@ -220,7 +220,13 @@ class AgentPosition:
 
     def tag(self):
         """
-        Return the new position of the agent after taggin an opponent
+        Return the new position of the agent after tagging an opponent
+        """
+        return self
+
+    def gift(self):
+        """
+        Return the new position of the agent after gifting an opponent
         """
         return self
 

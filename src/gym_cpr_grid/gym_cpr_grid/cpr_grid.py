@@ -112,6 +112,29 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             self.gifting_budget,
         ) = (None, None, None, None, None, None, None)
 
+    def observation_space_size(self, flattened=True):
+        """
+        Return the size of the observation space
+        """
+        return (
+            int(np.prod(self.observation_space.shape))
+            if flattened
+            else self.observation_space.shape
+        )
+
+    def action_space_size(self):
+        """
+        Return the size of the action space
+        """
+        return int(self.action_space.n)
+
+    def default_action(self):
+        """
+        Return a default action with no major consequences
+        on the agent/environment
+        """
+        return utils.AgentAction.STAND_STILL.value
+
     def reset(self):
         """
         Spawns a new environment by assigning random positions to the agents
