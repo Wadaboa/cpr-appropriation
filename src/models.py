@@ -53,7 +53,9 @@ class MLP(nn.Module):
                 non_linearity(),
             ]
         self.mlp = nn.Sequential(*linear_layers)
+        self.out = nn.LogSoftmax()
 
     def forward(self, x):
         start_dim = 0 if not self.training else 2
-        return self.mlp(torch.flatten(x, start_dim=start_dim))
+        x = self.mlp(torch.flatten(x, start_dim=start_dim))
+        return self.out(x)

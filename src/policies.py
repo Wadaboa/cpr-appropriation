@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 import torch.optim as optim
-from torch.distributions import Categorical
+import torch.nn as nn
 from loguru import logger
 
 
@@ -10,53 +10,72 @@ class VPGPolicy:
     Vanilla Policy Gradient implementation
     """
 
-    def __init__(self, env, estimator, lr=1e-3, discount=0.99, batch_size=128):
+    def __init__(self, env, policy_nn, baseline_nn=None):
         self.env = env
-        self.estimator = estimator
-        self.discount = discount
-        self.batch_size = batch_size
-        self.optimizer = optim.Adam(estimator.parameters(), lr=lr)
+        self.policy_nn = policy_nn
+        self.baseline_nn = baseline_nn
 
-    def train(self, max_episodes):
+    def train(
+        self, max_epochs, lr=1e-3, discount=0.99, batch_size=128, ignore_index=-100
+    ):
         """
         Train VPG by running the specified number of episodes and
         maximum time steps
         """
-        # Iterate for the specified number of episodes
-        current_episode = 0
-        while current_episode < max_episodes:
+        # Define losses
+        policy_loss = nn.NLLLoss(ignore_index=ignore_index, reduction="mean")
+        if self.baseline_nn is not None:
+            baseline_loss = nn.MSELoss(reduction="mean")
+
+        # Define optimizer
+        params = list(self.policy_nn.parameters())
+        if self.baseline_nn is not None:
+            params += list(self.baseline_nn.parameters())
+        optimizer = optim.Adam(params, lr=lr)
+
+        # Iterate for the specified number of epochs
+        for epoch in range(max_epochs):
+            logger.info(f"Epoch {epoch + 1} / {max_epochs}")
 
             # Accumulate trajectories to fill-up a batch of examples
             trajectories = TrajectoryPool()
-            for _ in range(self.batch_size // self.env.n_agents):
-                logger.info(f"Episode {current_episode + 1} / {max_episodes}")
+            for _ in range(batch_size // self.env.n_agents):
                 episode_trajectories = self.execute_episode()
                 trajectories.extend(episode_trajectories)
-                current_episode += 1
-                if current_episode >= max_episodes:
-                    break
 
             # Get a batch of (s, a, r) tuples
             logger.info(f"Working with a batch size of {len(trajectories)}")
             states, actions, returns, _ = trajectories.tensorify(
                 self.env.max_steps,
                 self.env.observation_space_size(flattened=False),
-                discount=self.discount,
-                default_action=self.env.default_action(),
+                discount=discount,
+                ignore_index=ignore_index,
             )
 
+            # Compute log-probabilities of actions
+            self.policy_nn.train(mode=True)
+            log_probs = self.policy_nn(states)
+
+            # Compute baseline
+            values = torch.zeros_like(returns)
+            if self.baseline_nn is not None:
+                values = self.baseline_nn(states).squeeze()
+
             # Compute loss
-            self.estimator.train(mode=True)
-            logits = self.estimator(states)
-            sampler = Categorical(logits=logits)
-            sampled_actions = sampler.sample()
-            log_probs = -sampler.log_prob(sampled_actions)
-            loss = torch.mean(returns * torch.gather(log_probs, 1, actions))
+            advantage = (
+                (returns - values).unsqueeze(-1).repeat(1, 1, log_probs.shape[-1])
+            )
+            total_loss = policy_loss(
+                torch.flatten(log_probs * advantage, start_dim=0, end_dim=1),
+                torch.flatten(actions),
+            )
+            if self.baseline_nn is not None:
+                total_loss += baseline_loss(values, returns)
 
             # Backprop
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
 
     def execute_episode(self):
         """
@@ -65,7 +84,7 @@ class VPGPolicy:
         one for each agent
         """
         # Initialize trajectories and reset environment
-        self.estimator.eval()
+        self.policy_nn.eval()
         trajectories = TrajectoryPool(n=self.env.n_agents)
         observations = self.env.reset()
 
@@ -75,10 +94,13 @@ class VPGPolicy:
             # Compute the best actions based on the current policy
             action_dict = dict()
             for agent_handle in range(self.env.n_agents):
-                logits = self.estimator(
+                log_probs = self.policy_nn(
                     torch.tensor(observations[agent_handle], dtype=torch.float32)
                 )
-                action = Categorical(logits=logits).sample()
+                action = np.random.choice(
+                    np.arange(self.env.action_space_size()),
+                    p=np.exp(log_probs.detach().numpy()),
+                )
                 action_dict[agent_handle] = action.item()
 
             # Perform a step in the environment
@@ -137,7 +159,7 @@ class TrajectoryPool:
         """
         self.trajectories[i].add_timestep(state, action, reward, next_state)
 
-    def tensorify(self, max_steps, state_shape, discount=1, default_action=0):
+    def tensorify(self, max_steps, state_shape, discount=1, ignore_index=-100):
         """
         Convert the current pool of trajectories to
         a set of PyTorch tensors
@@ -148,20 +170,22 @@ class TrajectoryPool:
 
         # Initialize tensors
         states = torch.full(
-            (len(self.trajectories), max_steps, *state_shape), -1, dtype=torch.float32
+            (len(self.trajectories), max_steps, *state_shape),
+            ignore_index,
+            dtype=torch.float32,
         )
         actions = torch.full(
-            (len(self.trajectories), max_steps), default_action, dtype=torch.int64
+            (len(self.trajectories), max_steps), ignore_index, dtype=torch.int64
         )
-        returns = torch.full_like(actions, 0, dtype=torch.float32)
-        next_states = torch.full_like(states, -1, dtype=torch.float32)
+        returns = torch.full_like(actions, ignore_index, dtype=torch.float32)
+        next_states = torch.full_like(states, ignore_index, dtype=torch.float32)
 
         # Update tensors for each trajectory
         for i, trajectory in enumerate(self.trajectories):
             t_states = trajectory.get_states(as_torch=True)
             t_actions = trajectory.get_actions(as_torch=True)
             t_returns = trajectory.get_returns(
-                discount=discount, per_timestep=True, as_torch=True
+                discount=discount, to_go=True, as_torch=True
             )
             t_next_states = trajectory.get_next_states(as_torch=True)
             states[i, : t_states.shape[0]] = t_states
@@ -237,9 +261,7 @@ class Trajectory:
             else torch.tensor(self.next_states)
         )
 
-    def get_returns(
-        self, max_timestep=None, discount=1, per_timestep=False, as_torch=True
-    ):
+    def get_returns(self, max_timestep=None, discount=1, to_go=False, as_torch=True):
         """
         Compute returns of the current trajectory. You can compute the following return types:
         - Finite-horizon undiscounted return: set `max_timestep=t` and `discount=1`
@@ -250,9 +272,11 @@ class Trajectory:
             max_timestep = self.current_timestep
         max_timestep = np.clip(max_timestep, 0, self.current_timestep)
         discount_per_timestep = discount ** np.arange(max_timestep)
-        returns_per_timestep = np.cumsum(np.array(self.rewards) * discount_per_timestep)
-        returns = returns_per_timestep[-1] if not per_timestep else returns_per_timestep
-        return returns if not as_torch else torch.tensor(returns)
+        returns_per_timestep = np.cumsum(
+            np.array(self.rewards)[::-1] * discount_per_timestep[::-1]
+        )[::-1]
+        returns = returns_per_timestep[0] if not to_go else returns_per_timestep
+        return returns if not as_torch else torch.tensor(returns.copy())
 
     def __getitem__(self, t):
         """
