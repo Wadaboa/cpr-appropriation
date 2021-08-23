@@ -10,15 +10,20 @@ class Trajectory:
     """
 
     def __init__(self):
-        self.states, self.actions, self.rewards, self.next_states = [], [], [], []
+        self.states = []
+        self.actions = []
+        self.action_probs = []
+        self.rewards = []
+        self.next_states = []
         self.current_timestep = 0
 
-    def add_timestep(self, state, action, reward, next_state):
+    def add_timestep(self, state, action, action_probs, reward, next_state):
         """
         Add the given (s, a, r, s') tuple to the trajectory
         """
         self.states.append(state)
         self.actions.append(action)
+        self.action_probs.append(action_probs)
         self.rewards.append(reward)
         self.next_states.append(next_state)
         self.current_timestep += 1
@@ -36,6 +41,17 @@ class Trajectory:
         either as a Numpy array or as a PyTorch tensor
         """
         return np.array(self.actions) if not as_torch else torch.tensor(self.actions)
+
+    def get_action_probs(self, as_torch=True):
+        """
+        Return the list of action probabilities in the current trajectory
+        either as a Numpy array or as a PyTorch tensor
+        """
+        return (
+            np.array(self.action_probs)
+            if not as_torch
+            else torch.tensor(self.action_probs)
+        )
 
     def get_rewards(self, as_torch=True):
         """
@@ -76,7 +92,13 @@ class Trajectory:
         """
         Return the (s, a, r, s') tuple at time-step t
         """
-        return (self.states[t], self.actions[t], self.rewards[t], self.next_states[t])
+        return (
+            self.states[t],
+            self.actions[t],
+            self.action_probs[t],
+            self.rewards[t],
+            self.next_states[t],
+        )
 
     def __len__(self):
         """
@@ -112,13 +134,17 @@ class TrajectoryPool:
         for trajectory in trajectory_pool:
             self.add(trajectory)
 
-    def add_to_trajectory(self, i, state, action, reward, next_state):
+    def add_to_trajectory(self, i, state, action, action_probs, reward, next_state):
         """
         Add a (s, a, r, s') tuple to the i-th trajectory in the pool
         """
-        self.trajectories[i].add_timestep(state, action, reward, next_state)
+        self.trajectories[i].add_timestep(
+            state, action, action_probs, reward, next_state
+        )
 
-    def tensorify(self, max_steps, state_shape, discount=1, ignore_index=-100):
+    def tensorify(
+        self, max_steps, state_shape, num_actions, discount=1, ignore_index=-100
+    ):
         """
         Convert the current pool of trajectories to
         a set of PyTorch tensors
@@ -136,6 +162,11 @@ class TrajectoryPool:
         actions = torch.full(
             (len(self.trajectories), max_steps), ignore_index, dtype=torch.int64
         )
+        action_probs = torch.full(
+            (len(self.trajectories), max_steps, num_actions),
+            ignore_index,
+            dtype=torch.float32,
+        )
         returns = torch.full_like(actions, ignore_index, dtype=torch.float32)
         next_states = torch.full_like(states, ignore_index, dtype=torch.float32)
 
@@ -143,16 +174,18 @@ class TrajectoryPool:
         for i, trajectory in enumerate(self.trajectories):
             t_states = trajectory.get_states(as_torch=True)
             t_actions = trajectory.get_actions(as_torch=True)
+            t_action_probs = trajectory.get_action_probs(as_torch=True)
             t_returns = trajectory.get_returns(
                 discount=discount, to_go=True, as_torch=True
             )
             t_next_states = trajectory.get_next_states(as_torch=True)
             states[i, : t_states.shape[0]] = t_states
             actions[i, : t_actions.shape[0]] = t_actions
+            action_probs[i, : t_action_probs.shape[0]] = t_action_probs
             returns[i, : t_returns.shape[0]] = t_returns
             next_states[i, : t_next_states.shape[0]] = t_next_states
 
-        return states, actions, returns, next_states
+        return states, actions, action_probs, returns, next_states
 
     def __getitem__(self, i):
         """

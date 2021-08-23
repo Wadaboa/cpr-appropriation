@@ -55,7 +55,18 @@ class MLP(nn.Module):
         self.mlp = nn.Sequential(*linear_layers)
         self.out = nn.LogSoftmax()
 
+    def reset_parameters(self):
+        """
+        Set network's parameters to their initial values
+        """
+        for layer in self.children():
+            if hasattr(layer, "reset_parameters"):
+                layer.reset_parameters()
+
     def forward(self, x):
+        """
+        Perform a single example or batch forward pass
+        """
         start_dim = 0 if not self.training else 2
         x = self.mlp(torch.flatten(x, start_dim=start_dim))
         return self.out(x)
