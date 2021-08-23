@@ -424,5 +424,9 @@ TSWLatexianTemp*
 wandb_api_key_file
 wandb/
 
-# RLlib
+# Logs and checkpoints
 rllib_logs/
+checkpoints/
+
+# Tex
+__latexindent_temp.*

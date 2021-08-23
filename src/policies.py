@@ -22,9 +22,9 @@ def init_wandb(config):
     """
     assert isinstance(config, dict), "The given W&B config should be a dictionary"
     assert "api_key" in config, "Missing API key value in W&B config"
-    assert "group" in config, "Missing group name in W&B config"
     assert "project" in config, "Missing project name in W&B config"
     assert "entity" in config, "Missing entity name in W&B config"
+    assert "group" in config, "Missing group name in W&B config"
 
     os.environ["WANDB_API_KEY"] = config["api_key"]
     exclude_keys = ["api_key", "project", "entity", "group"]
@@ -89,17 +89,21 @@ class VPGPolicy:
 
         # Iterate for the specified number of epochs
         metrics = defaultdict(int)
+        current_episode = 0
         for epoch in range(max_epochs):
             logger.info(f"Epoch {epoch + 1} / {max_epochs}")
 
             # Accumulate trajectories to fill-up a batch of examples
             trajectories = memory.TrajectoryPool()
             for _ in range(batch_size // self.env.n_agents):
+                logger.info(f"Episode {current_episode + 1}")
                 episode_trajectories = self.execute_episode()
                 social_outcome_metrics = self.env.get_social_outcome_metrics()
+                logger.info(f"Social outcome metrics: {social_outcome_metrics}")
                 for m in social_outcome_metrics:
                     metrics[m] += social_outcome_metrics[m]
                 trajectories.extend(episode_trajectories)
+                current_episode += 1
 
             # Get a batch of (s, a, r) tuples
             logger.info(f"Working with a batch size of {len(trajectories)}")
@@ -128,10 +132,14 @@ class VPGPolicy:
                 log_probs,
                 old_log_probs,
             )
+            logger.info(f"Total loss: {total_loss}")
+
+            # Compute mean epoch metrics
+            mean_metrics = {k: v / (epoch + 1) for k, v in metrics.items()}
+            logger.info(f"Mean metrics: {mean_metrics}")
 
             # Log to wandb at end of epoch
             if wandb:
-                mean_metrics = {k: v / (epoch + 1) for k, v in metrics.items()}
                 wandb_run.log({**mean_metrics, "loss": total_loss}, step=epoch)
 
             # Backprop
@@ -141,6 +149,7 @@ class VPGPolicy:
 
         # Save model checkpoints
         if save_every is not None and epoch % save_every == 0:
+            logger.info(f"Saving model checkpoints to {checkpoints_path}")
             self.save(checkpoints_path)
 
         # Stop wandb logging
@@ -209,7 +218,7 @@ class VPGPolicy:
             # if all agents are done
             observations = new_observations
             if dones["__all__"]:
-                logger.info(f"Early stopping, all agents done")
+                logger.debug(f"Early stopping, all agents done")
                 break
 
         return trajectories

@@ -55,7 +55,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         beam_squares_width=5,
         ball_radius=2,
         max_steps=1000,
-        initial_resource_probability=0.1,
+        initial_resource_probability=0.05,
         gifting_mechanism=None,
         gifting_fixed_budget_size=40,
     ):
