@@ -2,20 +2,17 @@
 \usepackage[square,numbers]{natbib}
 \bibliographystyle{abbrvnat}
 \usepackage[preprint]{neurips_2020}
-\usepackage[utf8]{inputenc} 
-\usepackage[T1]{fontenc}    
-\usepackage{hyperref}       
-\usepackage{url}            
-\usepackage{booktabs}       
-\usepackage{amsfonts}       
-\usepackage{nicefrac}       
-\usepackage{microtype}      
-
-% Define argmax and softmax
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{nicefrac}
+\usepackage{microtype}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
 \usepackage{amsmath}
-\DeclareMathOperator*{\argmax}{arg\,max}
-\DeclareMathOperator*{\softmax}{soft\,max}
-\DeclareMathOperator*{\mean}{mean}
 
 \title{Solving the Harvest CPR Appropriation Problem with Policy Gradient Techniques}
 
@@ -50,9 +47,7 @@ Modeling CPR appropriation problems with artificial agents poses great challenge
 \section{Reinforcement learning setting}
 
 \subsection{Value-based methods}
-A DQN (Deep $Q$-Network) \cite{dqn} leverages neural networks from the point of view of universal function approximators, to estimate the optimal $Q^*$ state-action function. 
-
-The main idea behind DQN is to estimate $Q^*$ with $Q_\theta$ and use the Bellman equation to update the weights $\theta$ of the network so that $Q_\theta\rightarrow Q^*$. In particular, the loss to be used is a regression one (e.g. MSE or Huber) like the following to minimize the so-called TD (Temporal Difference) error:
+A DQN (Deep $Q$-Network) \cite{dqn} leverages neural networks from the point of view of universal function approximators, to estimate the optimal $Q^*$ state-action function. The main idea behind DQN is to estimate $Q^*$ with $Q_\theta$ and use the Bellman equation to update the weights $\theta$ of the network so that $Q_\theta\rightarrow Q^*$. In particular, the loss to be used is a regression one (e.g. MSE or Huber) like the following to minimize the so-called TD (Temporal Difference) error:
 $$
 L(\theta)=\mathbb{E}_{(s_t,a_t,r_{t+1},s_{t+1})}\left[\left(\underbrace{r_{t+1}+\gamma\max_{a_{t+1}}Q_\theta(s_{t+1}, a_{t+1}) - Q_\theta(s_t, a_t)}_{TD}\right)^2\right]
 $$
@@ -67,6 +62,45 @@ $$
 One important issue of standard DQNs is that they tend to overestimate $Q$ values (which is mostly due to the $\max$ operator in the Bellman optimality equation), leading to unstable training and low quality policies. To mitigate the issue, in \cite{double-dqn} and \cite{dueling-dqn} authors propose two popular DQN variants, the double and dueling ones, respectively.
 
 \subsection{Policy gradient techniques}
+
+\begin{algorithm}
+  \caption{Generic policy gradient pipeline}
+  \begin{algorithmic}[1]
+    \Require policy $\theta_p^{(0)}$, baseline $\theta_b^{(0)}$, epochs $E$, batch size $B$, max steps $M$
+    \State $e \gets 0$
+    \While{$e < E$}
+      \State Build a pool of trajectories $T_e=\{t_1,\dots,t_B\}$ by running policy $\pi(\theta_p^{(e)})$
+      \State Compute rewards-to-go $\hat{R}_i^{(e)}=[\hat{R}_i^{(0)}, \dots, \hat{R}_i^{(M)}]$ for each trajectory $i$
+      \State Compute values as $\hat{V}_i^{(e)}=V(s_i;\theta_b^{(e)}), s_i \in t_i$ for each trajectory $i$
+      \State Compute advantage estimates as $\hat{A}_i^{(e)}=(\hat{R}_i-\hat{V}_i)$
+      \State Compute log-probabilities of actions as $\hat{P}_i^{(e)}=\pi(s_i;\theta_p^{(e)}), s_i \in t_i$ for each trajectory $i$
+      \State Compute model loss and back-propagate
+    \EndWhile
+  \end{algorithmic}
+\end{algorithm}
+
+\begin{equation}
+  \begin{aligned}
+    L_{VPG}={} & CE(\hat{P}_i^{(e)}\cdot \hat{A}_i^{(e)}, A) \\
+    & \alpha\cdot MSE(\hat{V}_i^{(e)}, \hat{R}_i^{(e)})
+  \end{aligned}
+\end{equation}
+
+\begin{equation}
+  \begin{aligned}
+    L_{TRPO}={} & CE(\frac{\hat{P}_i^{(e)}}{\hat{P}_i^{(e-1)}}\cdot \hat{A}_i^{(e)}, A) \\
+    & + \alpha\cdot MSE(\hat{V}_i^{(e)}, \hat{R}_i^{(e)}) \\
+    & - \beta\cdot KL(\pi(\theta_p^{(e-1)}), \pi(\theta_p^{(e)}))
+  \end{aligned}
+\end{equation}
+
+\begin{equation}
+  \begin{aligned}
+    L_{PPO}={} & CE(\min(r^{(e)}\cdot \hat{A}_i^{(e)}, clip(r^{(e)}, 1-\epsilon, 1+\epsilon)\cdot \hat{A}_i^{(e)}), A) \\
+    & - \alpha\cdot MSE(\hat{V}_i^{(e)}, \hat{R}_i^{(e)}) \\
+    & + \gamma\cdot S(\pi(\theta_p^{(e)})), r^{(e)}=\frac{\hat{P}_i^{(e)}}{\hat{P}_i^{(e-1)}}
+  \end{aligned}
+\end{equation}
 
 \section{Results}
 
