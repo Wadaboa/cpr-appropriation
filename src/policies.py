@@ -16,11 +16,25 @@ from . import memory
 IGNORE_INDEX = -100
 
 
-def init_wandb(config=None):
+def init_wandb(config):
     """
     Return a new W&B run to be used for logging purposes
     """
-    return wandb.init(project="cpr-appropriation", entity="wadaboa", config=config)
+    assert isinstance(config, dict), "The given W&B config should be a dictionary"
+    assert "api_key" in config, "Missing API key value in W&B config"
+    assert "group" in config, "Missing group name in W&B config"
+    assert "project" in config, "Missing project name in W&B config"
+    assert "entity" in config, "Missing entity name in W&B config"
+
+    os.environ["WANDB_API_KEY"] = config["api_key"]
+    exclude_keys = ["api_key", "project", "entity", "group"]
+    remaining_config = {k: v for k, v in config.items() if k not in exclude_keys}
+    return wandb.init(
+        project=config["project"],
+        entity=config["entity"],
+        group=config["group"],
+        config=remaining_config,
+    )
 
 
 class VPGPolicy:
@@ -49,6 +63,7 @@ class VPGPolicy:
         save_every=None,
         checkpoints_path=None,
         wandb=True,
+        wandb_config=None,
     ):
         """
         Train VPG by running the specified number of episodes and
@@ -62,7 +77,15 @@ class VPGPolicy:
 
         # Initialize wandb for logging
         if wandb:
-            wandb_run = init_wandb()
+            wandb_config = {
+                **wandb_config,
+                "epochs": max_epochs,
+                "lr": lr,
+                "discount": discount,
+                "batch_size": batch_size,
+                "baseline": self.baseline_nn is not None,
+            }
+            wandb_run = init_wandb(config=wandb_config)
 
         # Iterate for the specified number of epochs
         metrics = defaultdict(int)

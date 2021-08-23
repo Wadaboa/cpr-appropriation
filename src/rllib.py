@@ -4,6 +4,12 @@ import torch.nn as nn
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.models.torch.fcnet import FullyConnectedNetwork
 from ray.rllib.agents.callbacks import DefaultCallbacks
+from ray import tune
+from ray.tune import JupyterNotebookReporter, CLIReporter
+from ray.rllib.models import ModelCatalog
+from ray.rllib.agents.dqn import DQNTrainer
+from ray.tune.logger import DEFAULT_LOGGERS
+from ray.tune.integration.wandb import WandbLogger
 
 
 class SocialOutcomeMetricsCallbacks(DefaultCallbacks):
@@ -55,7 +61,7 @@ class SocialOutcomeMetricsCallbacks(DefaultCallbacks):
 
         # Store final episode metrics
         mean_metrics = {k: np.mean(v) for k, v in episode.user_data.items()}
-        for metric, value in mean_metrics:
+        for metric, value in mean_metrics.items():
             episode.custom_metrics[metric] = value
             episode.hist_data[metric] = episode.user_data[metric]
 
@@ -87,3 +93,81 @@ class FCNetwork(TorchModelV2, nn.Module):
         Returns the value function output for the most recent forward pass
         """
         return torch.reshape(self.torch_sub_model.value_function(), [-1])
+
+
+def dqn_baseline(
+    n_agents,
+    grid_width,
+    grid_height,
+    wandb_project,
+    wandb_api_key,
+    log_dir,
+    max_episodes,
+    max_steps=1000,
+    tagging_ability=False,
+    gifting_mechanism=None,
+    num_workers=1,
+    jupyter=False,
+    seed=42,
+):
+    """
+    Run the DQN model described in the paper using RLlib's implementation
+    """
+    ModelCatalog.register_custom_model("fcn", FCNetwork)
+    metric_columns = {
+        "episodes_total": "episodes",
+        "custom_metrics/efficiency_mean": "U",
+        "custom_metrics/equality_mean": "E",
+        "custom_metrics/sustainability_mean": "S",
+        "custom_metrics/peace_mean": "P",
+    }
+    reporter = CLIReporter(metric_columns=metric_columns)
+    if jupyter:
+        reporter = JupyterNotebookReporter(
+            overwrite=True,
+            metric_columns=metric_columns,
+        )
+    config = {
+        "env": "gym_cpr_grid:CPRGridEnv-v0",
+        "env_config": {
+            "n_agents": n_agents,
+            "grid_width": grid_width,
+            "grid_height": grid_height,
+            "max_steps": max_steps,
+            "tagging_ability": tagging_ability,
+            "gifting_mechanism": gifting_mechanism,
+        },
+        "horizon": max_steps,
+        "num_workers": num_workers,
+        "framework": "torch",
+        "seed": seed,
+        "model": {
+            "custom_model": "fcn",
+            "fcnet_hiddens": [32, 32],
+            "fcnet_activation": "relu",
+        },
+        "exploration_config": {
+            "type": "EpsilonGreedy",
+            "initial_epsilon": 1.0,
+            "final_epsilon": 0.1,
+            "epsilon_timesteps": max_steps,
+        },
+        "callbacks": SocialOutcomeMetricsCallbacks,
+        "logger_config": {
+            "wandb": {
+                "project": wandb_project,
+                "api_key": wandb_api_key,
+                "log_config": True,
+                "sync_tensorboard": True,
+            }
+        },
+    }
+    return tune.run(
+        DQNTrainer,
+        config=config,
+        progress_reporter=reporter,
+        loggers=DEFAULT_LOGGERS + (WandbLogger,),
+        checkpoint_at_end=True,
+        local_dir=log_dir,
+        stop=lambda _, result: result["episodes_total"] >= max_episodes,
+    )

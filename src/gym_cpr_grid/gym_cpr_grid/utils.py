@@ -242,7 +242,7 @@ class AgentPosition:
         return getattr(self, action.name.lower())()
 
     def __repr__(self):
-        return f"AgentPosition({self.x}, {self.y}, {self.o})"
+        return f"AgentPosition({self.x}, {self.y}, {self.o.name})"
 
     def __eq__(self, other):
         return (

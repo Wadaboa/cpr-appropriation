@@ -17,7 +17,7 @@ class MLP(nn.Module):
         ), "Hidden dimensions should be given as a list of integers"
         assert isinstance(
             output_size, int
-        ), "Input dimensions should be given as an integer"
+        ), "Output dimensions should be given as an integer"
         super(MLP, self).__init__()
 
         hidden_dims += [output_size]

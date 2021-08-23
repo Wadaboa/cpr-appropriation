@@ -469,13 +469,14 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         Pad the 2D grid by computing pad widths based
         on the given position and span lenghts in both axes
         """
+        height, width = grid.shape
         x_pad_width = (
             abs(np.clip(x - xl, None, 0)),
-            np.clip(x + xl - self.grid_width + 1, 0, None),
+            np.clip(x + xl - width + 1, 0, None),
         )
         y_pad_width = (
             abs(np.clip(y - yl, None, 0)),
-            np.clip(y + yl - self.grid_height + 1, 0, None),
+            np.clip(y + yl - height + 1, 0, None),
         )
         padded_grid = np.pad(
             grid,
@@ -493,7 +494,8 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         # Get the current agent's position
         agent_position = self.agent_positions[agent_handle]
 
-        # Rotate the grid based on agent's orientation
+        # Rotate the grid based on agent's orientation so that
+        # we are always facing downwards
         grid = grid if grid is not None else self.grid.copy()
         k = (
             1
@@ -653,18 +655,24 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             "peace": self.peace_metric(),
         }
 
-    def plot(self, img, map_colors=True):
+    def plot(self, img, map_colors=True, ticks=False):
         """
         Plot the given image in a standard way
         """
         fig, ax = plt.subplots(figsize=self.FIGSIZE)
+        height, width = img.shape[0], img.shape[1]
         img = ax.imshow(
             img,
             cmap=self.COLORMAP if map_colors else None,
             norm=self.COLOR_BOUNDARIES if map_colors else None,
             origin="upper",
         )
-        ax.axis("off")
+        if not ticks:
+            ax.axis("off")
+        else:
+            ax.set_xticks(np.arange(0, width, 1), minor=False)
+            ax.set_yticks(np.arange(0, height, 1), minor=False)
+            ax.xaxis.tick_top()
         return fig, ax, img
 
     def plot_observation(self, obs):
@@ -674,11 +682,11 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         self.plot(obs * 255.0, map_colors=False)
         plt.show()
 
-    def render(self, mode="human"):
+    def render(self, mode="human", ticks=False):
         """
         Render the environment as an RGB image
         """
-        fig, _, _ = self.plot(self.grid)
+        fig, _, _ = self.plot(self.grid, ticks=ticks)
         if mode == "rgb_array":
             fig.canvas.draw()
             data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep="")
