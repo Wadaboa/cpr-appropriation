@@ -1,8 +1,12 @@
+import os
+from datetime import datetime
+from collections import defaultdict
+
 import numpy as np
-from numpy.lib.arraysetops import isin
 import torch
 import torch.optim as optim
 import torch.nn as nn
+import wandb
 from torch.distributions import Categorical
 from loguru import logger
 
@@ -12,22 +16,23 @@ from . import memory
 IGNORE_INDEX = -100
 
 
+def init_wandb(config=None):
+    """
+    Return a new W&B run to be used for logging purposes
+    """
+    return wandb.init(project="cpr-appropriation", entity="wadaboa", config=config)
+
+
 class VPGPolicy:
     """
     Vanilla Policy Gradient implementation
     """
 
-    def __init__(self, env, policy_nn, baseline_nn=None, reset_parameters=True):
+    def __init__(self, env, policy_nn, baseline_nn=None):
         # Store parameters
         self.env = env
         self.policy_nn = policy_nn
         self.baseline_nn = baseline_nn
-
-        # Reset network parameters to their initial values
-        if reset_parameters:
-            policy_nn.reset_parameters()
-            if self.baseline_nn is not None:
-                self.baseline_nn.reset_parameters()
 
         # Define losses
         self.losses = dict()
@@ -35,7 +40,16 @@ class VPGPolicy:
         if self.baseline_nn is not None:
             self.losses["baseline"] = nn.MSELoss(reduction="mean")
 
-    def train(self, max_epochs, lr=1e-3, discount=0.99, batch_size=128):
+    def train(
+        self,
+        max_epochs,
+        lr=1e-3,
+        discount=0.99,
+        batch_size=32,
+        save_every=None,
+        checkpoints_path=None,
+        wandb=True,
+    ):
         """
         Train VPG by running the specified number of episodes and
         maximum time steps
@@ -46,7 +60,12 @@ class VPGPolicy:
             params += list(self.baseline_nn.parameters())
         optimizer = optim.Adam(params, lr=lr)
 
+        # Initialize wandb for logging
+        if wandb:
+            wandb_run = init_wandb()
+
         # Iterate for the specified number of epochs
+        metrics = defaultdict(int)
         for epoch in range(max_epochs):
             logger.info(f"Epoch {epoch + 1} / {max_epochs}")
 
@@ -54,6 +73,9 @@ class VPGPolicy:
             trajectories = memory.TrajectoryPool()
             for _ in range(batch_size // self.env.n_agents):
                 episode_trajectories = self.execute_episode()
+                social_outcome_metrics = self.env.get_social_outcome_metrics()
+                for m in social_outcome_metrics:
+                    metrics[m] += social_outcome_metrics[m]
                 trajectories.extend(episode_trajectories)
 
             # Get a batch of (s, a, r) tuples
@@ -84,10 +106,22 @@ class VPGPolicy:
                 old_log_probs,
             )
 
+            # Log to wandb at end of epoch
+            if wandb:
+                mean_metrics = {k: v / (epoch + 1) for k, v in metrics.items()}
+                wandb_run.log({**mean_metrics, "loss": total_loss}, step=epoch)
+
             # Backprop
             optimizer.zero_grad()
             total_loss.backward()
             optimizer.step()
+
+        # Save model checkpoints
+        if save_every is not None and epoch % save_every == 0:
+            self.save(checkpoints_path)
+
+        # Stop wandb logging
+        wandb_run.finish()
 
     def compute_loss(
         self,
@@ -157,6 +191,31 @@ class VPGPolicy:
 
         return trajectories
 
+    def save(self, path):
+        """
+        Save policy network and baseline network (if used) to the given directory
+        """
+        assert os.path.exists(path), "The given path does not exist"
+        assert not os.path.isfile(
+            path
+        ), "The given path should be a directory, not a file"
+        prefix = datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.mkdir(os.path.join(path, prefix))
+        torch.save(self.policy_nn.state_dict(), os.path.join(path, prefix, "policy"))
+        if self.baseline_nn is not None:
+            torch.save(
+                self.baseline_nn.state_dict(), os.path.join(path, prefix, "baseline")
+            )
+
+    def load(self, path):
+        """
+        Load the policy and baseline network (if used) from the given path
+        """
+        assert os.path.exists(path), "The given path does not exist"
+        self.policy_nn.load_state_dict(torch.load(os.path.join(path, "policy")))
+        if self.baseline_nn is not None:
+            self.baseline_nn.load_state_dict(torch.load(os.path.join(path, "baseline")))
+
 
 class TRPOPolicy(VPGPolicy):
     """
@@ -169,7 +228,6 @@ class TRPOPolicy(VPGPolicy):
         env,
         policy_nn,
         baseline_nn,
-        reset_parameters=True,
         beta=1.0,
         kl_target=0.01,
     ):
@@ -179,9 +237,7 @@ class TRPOPolicy(VPGPolicy):
         assert kl_target is None or isinstance(
             kl_target, float
         ), "The KL divergence target should be given as a float"
-        super().__init__(
-            env, policy_nn, baseline_nn=baseline_nn, reset_parameters=reset_parameters
-        )
+        super().__init__(env, policy_nn, baseline_nn=baseline_nn)
         self.beta = beta
         self.kl_target = kl_target
         self.losses["constraint"] = nn.KLDivLoss(log_target=True, reduction="batchmean")
@@ -230,7 +286,6 @@ class PPOPolicy(VPGPolicy):
         env,
         policy_nn,
         baseline_nn,
-        reset_parameters=True,
         c1=1.0,
         c2=0.0,
         eps=0.2,
@@ -238,9 +293,7 @@ class PPOPolicy(VPGPolicy):
         assert isinstance(c1, float) and isinstance(
             c2, float
         ), "The c1 and c2 hyperparameters should be given as floats"
-        super().__init__(
-            env, policy_nn, baseline_nn=baseline_nn, reset_parameters=reset_parameters
-        )
+        super().__init__(env, policy_nn, baseline_nn=baseline_nn)
         self.c1 = c1
         self.c2 = c2
         self.eps = eps

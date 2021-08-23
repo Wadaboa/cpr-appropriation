@@ -108,9 +108,10 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             self.grid,
             self.tagged_agents,
             self.tagging_history,
+            self.rewards_history,
             self.collected_resources,
             self.gifting_budget,
-        ) = (None, None, None, None, None, None, None)
+        ) = (None, None, None, None, None, None, None, None)
 
     def observation_space_size(self, flattened=True):
         """
@@ -147,6 +148,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         self.tagged_agents = dict()
         self.tagging_history = [dict(self.tagged_agents)]
         self.collected_resources = {h: 0 for h in range(self.n_agents)}
+        self.rewards_history = {h: [] for h in range(self.n_agents)}
 
         # Initialize gifting budget based on the chosen gifting mechanism
         if self.gifting_mechanism == utils.GiftingMechanism.ZERO_SUM:
@@ -305,9 +307,10 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             dones = {h: True for h in range(self.n_agents)}
             dones["__all__"] = True
 
-        # Compute observations for each agent
+        # Compute observations for each agent and store rewards history
         for agent_handle in range(self.n_agents):
             observations[agent_handle] = self._get_observation(agent_handle)
+            self.rewards_history[agent_handle].append(rewards[agent_handle])
 
         # Respawn resources
         self._respawn_resources()
@@ -583,6 +586,72 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         kernel[mask] = 1
 
         return ball[kernel.astype(bool)]
+
+    def _get_returns(self):
+        """
+        Compute the sum of historical rewards for each agent
+        """
+        returns = []
+        for agent_handle in range(self.n_agents):
+            returns += [np.sum(self.rewards_history[agent_handle])]
+        return returns
+
+    def utilitarian_metric(self):
+        """
+        The Utilitarian metric (U), also known as Efficiency, measures the sum total
+        of all rewards obtained by all agents: it is defined as the average over players
+        of sum of rewards
+        """
+        returns = self._get_returns()
+        return np.sum(returns) / self.elapsed_steps
+
+    def equality_metric(self, eps=1e-6):
+        """
+        The Equality metric (E) is defined using the Gini coefficient
+        """
+        returns = self._get_returns()
+        numerator = np.sum([abs(ri - rj) for ri in returns for rj in returns])
+        return 1 - (numerator / (2 * len(returns) * np.sum(returns) + eps))
+
+    def sustainability_metric(self):
+        """
+        The Sustainability metric (S) is defined as the average
+        time at which the rewards are collected
+        """
+        times = []
+        for agent_handle in range(self.n_agents):
+            rewards = self.rewards_history[agent_handle]
+            ti = np.argwhere(np.array(rewards) > 0)
+            times.append(self.max_steps if len(ti) == 0 else np.mean(ti))
+        return np.mean(times)
+
+    def peace_metric(self):
+        """
+        The Peace metric (P) is defined as the average number of
+        untagged agent steps
+        """
+        if not self.tagging_ability:
+            return np.nan
+        total = 0
+        for agent_handle in range(self.n_agents):
+            total += np.sum(
+                [
+                    int(agent_handle in tagging_checkpoint)
+                    for tagging_checkpoint in self.tagging_history
+                ]
+            )
+        return (self.n_agents * self.elapsed_steps - total) / self.elapsed_steps
+
+    def get_social_outcome_metrics(self):
+        """
+        Return the 4 social outcome metrics as described in the paper
+        """
+        return {
+            "efficiency": self.utilitarian_metric(),
+            "equality": self.equality_metric(),
+            "sustainability": self.sustainability_metric(),
+            "peace": self.peace_metric(),
+        }
 
     def plot(self, img, map_colors=True):
         """
