@@ -28,7 +28,7 @@
 \maketitle
 
 \begin{abstract}
-  This report explains methodology and results for the final project in the Autonomous and Adaptive Systems course, held by professor Mirco Musolesi for the M.Sc. in Artificial Intelligence at the University of Bologna (academic year 2020 - 2021). In this work, we tackle a Common Pool Resource appropriation problem often referred to as Harvest or Gathering, in which independently learning agents aim to collect as many apples as possible, while also trying to keep the CPR flow healthy. In the original work, agents are trained with value-based RL methods, while in this work we rely on policy gradient techniques such as VPG, TRPO and PPO. Moreover, we implement a form of cooperation through gifting, a social learning scheme in which agents can deliberately be generous and gift each other with collected resources.
+  This report explains methodology and results for the final project in the Autonomous and Adaptive Systems course, held by professor Mirco Musolesi for the M.Sc. in Artificial Intelligence at the University of Bologna (academic year 2020 - 2021). In this work, we tackle a Common Pool Resource appropriation problem often referred to as Harvest or Gathering, in which independently learning agents aim to collect as many apples as possible, while also trying to keep the CPR flow healthy. In the original work, agents are trained with value-based RL methods, while in this work we rely on policy gradient techniques such as VPG, TRPO and PPO. Moreover, we implement a form of cooperation through Gifting, a Social Learning scheme in which agents can deliberately be generous and gift each other with collected resources.
 \end{abstract}
 
 \section{Common Pool Resources}
@@ -39,66 +39,111 @@ CPR problems are mainly categorized in two buckets: provision, which deals with 
 Modeling CPR appropriation problems with artificial agents poses great challenges as such problems tend to have what's called a socially-deficient Nash equilibrium, meaning that the choice to appropriate is tipically dominant w.r.t. leaving the resource where it is to allow for re-growth. This is because the choice to restrain leads to no individual benefit, but to the cost of CPR exploitation by others. Thus, having a socially deficient Nash equilibrium means that if agents were to collaborate, each one of them would probably obtain far more resources than if they were to act in a completely independent way.
 
 \section{The commons game}
+The commons game, usually referred to as Harvest \cite{harvest} or Gathering \cite{sequential-social-dilemmas}, is a simple grid-like environment in which agents have to collect apples (resources). The catch is that the apple re-growth rate depends on the spatial configuration of the uncollected apples (stock): for each empty location $l$, $p_t(L)$ is the probability that a new apple will grow at location $l$ in the next time-step $t+1$, where $L$ gives the number of already spawned apples in a ball of radius $2$ centered around position $l$: 
 
-\subsection{Social outcome metrics}
+\[
+  p_t(L)= 
+  \begin{cases} 
+    0 & \text{if } L = 0 \\
+    0.01 & \text{if } L = 1 \text{ or } 2 \\
+    0.05 & \text{if } L = 3 \text{ or } 4 \\
+    0.01 & \text{if } L > 4 
+  \end{cases}
+\]
+
+At time-step $t$, each agent $j$ sees a local observation $o_j^{(t)}\in\mathbb{R}^{3\times20\times21}$ that spans $20$ grid squares ahead and $10$ grid squares on each side of its position (spread over $3$ channels to form an RGB image). Such observation is dependent on the agent's location and orientation (out of the $4$ cardinal directions $N, E, S, W$) on the grid. Each agent can then select the best action (according to its policy) out of $7$ possibilities: step forward, step backward, step left, step right, rotate left, rotate right and stand still. The goal is to maximize overall resource collection without depleting the stock: beware that each agent receives a reward of $+1$ when they collect an apple and no other reward is given.
 
 \subsection{Tagging and gifting}
+In the original environment, agents have an additional action available: tagging. Agents may tag one another with a time-out (or laser) beam: the effect of being hit with the beam is that such agents would be removed from the game for $D$ time-steps ($D=25$ in the original implementation). Tagging has no direct rewards or punishments, but it gives agents the possibility to effectively lower the environment population, thus giving them more time to secure resources.
+
+In order to let agents cooperate with each other, we rely on Social Learning \cite{social-learning}, a new class of algorithms that enables agents to reshape the reward function of other agents with the goal of promoting cooperation and achieving higher global rewards in mixed-motive games. The form of Social Learning we opted for is Gifting, a peer rewarding strategy which allows agents to reward other agents as part of their action space. Beware that the rewards that agent $a_i$ obtains from receiving a gift are independent from those it receives by acting upon the environment. With this extension, agents are equipped with an additional gifting beam, such that all agents in the beam receive a gift from such agent: the gift $g$ (defaults to $g=1$) is equally split among all tagged agents. Different gifting mechanisms have been implemented:
+\begin{enumerate}
+  \item Zero-sum: imposes no restriction on the number of times an agent can pick the gifting action within an episode (each time it sends a gift of value $g$, it incurs an immediate penalty of $-g$);
+  \item Fixed Budget: agents are allocated a fixed "budget" of size $B$ at the start of each episode, which is decremented by $g$ each time the agent chooses to gift (once the budget is depleted, gifting is no longer available as an action until the end of the episode);
+  \item Replenishable Budget: each agent starts with an initial budget $B = 0$, which is incremented as a function of the rewards it collects from the environment (for every $2$ apples collected, the budget is increased by $1$).
+\end{enumerate}
+
+Thus, if the laser beam consists of an indirect punitive action, the gifting beam is a direct rewarding action.
+
+\subsection{Social outcome metrics}
+Since the returns of a single agent are poor indicators of the group's behavior and performance, authors in \cite{harvest} introduced $4$ social metrics: Efficiency (U), measuring average returns; Sustainability (S), measuring the average time at which environmental rewards are collected; Equality (E), measuring the amount of impurity in resource collection; and Peace (P), measuring the average number of agents that are untagged at any given point. Given $N$ agents, $T$ maximum steps in an episode and $R_i=\sum_{t=1}^T r_i^{(t)}$ return of agent $i$ in an episode, social outcome metrics are computed as follows:
+
+\begin{equation}
+  \label{eq:metrics}
+  \begin{aligned}
+    & U = \frac{\sum_{i=1}^N R_i}{T}\\
+    & E = 1 - \frac{\sum_{i=1}^N\sum_{j=1}^N |R_i-R_j|}{2N\sum_{i=1}^N R_i} \\
+    & S = \frac{1}{N}\sum_{i=1}^N |\{t\mid r_i^{(t)}>0\}| \\
+    & P = \frac{NT-\sum_{i=1}^N\sum_{t=1}^T \mathbb{I}\{\text{agent } i \text{ timed-out on step } t\}}{T}
+  \end{aligned}
+\end{equation}
 
 \section{Reinforcement learning setting}
 
 \subsection{Value-based methods}
-A DQN (Deep $Q$-Network) \cite{dqn} leverages neural networks from the point of view of universal function approximators, to estimate the optimal $Q^*$ state-action function. The main idea behind DQN is to estimate $Q^*$ with $Q_\theta$ and use the Bellman equation to update the weights $\theta$ of the network so that $Q_\theta\rightarrow Q^*$. In particular, the loss to be used is a regression one (e.g. MSE or Huber) like the following to minimize the so-called TD (Temporal Difference) error:
+Value-based methods only store a value function (usually the state-action function $Q$), instead of explicitly storing the policy. Actions are then derived from the value function by picking the one with the best value. One of the most popular value-based algorithms is $Q$-learning and its neural variant DQN: a DQN (Deep $Q$-Network) \cite{dqn} leverages neural networks from the point of view of universal function approximators, to estimate the optimal $Q^*$ state-action function. The main idea behind DQN is to estimate $Q^*$ with $Q_\theta$ and use the Bellman equation to update the weights $\theta$ of the network so that $Q_\theta\rightarrow Q^*$. In particular, the loss to be used is a regression one (e.g. MSE or Huber) to minimize the so-called TD (Temporal Difference) error:
 $$
 L(\theta)=\mathbb{E}_{(s_t,a_t,r_{t+1},s_{t+1})}\left[\left(\underbrace{r_{t+1}+\gamma\max_{a_{t+1}}Q_\theta(s_{t+1}, a_{t+1}) - Q_\theta(s_t, a_t)}_{TD}\right)^2\right]
 $$
 
-About the network architecture, the literature does not follow a clear definition, so that the term DQN is mostly linked to the whole training pipeline required to reach good estimates of the optimal $Q$ function. For example, in the original paper \cite{dqn} DeepMind researchers use an initial CNN (Convolutional Neural Network), since their input is represented by videogame frames, followed by an MLP (Multi-Layer Perceptron). Instead, the original Harvest implementation only relies on the final fully-connected layers, where the number of input neurons is given by the linearization of the selected observation, the number of hidden cells and the number of hidden layers are hyperparameters, while the number of outputs is equal to the size of the action space. 
+About the network architecture, the literature does not follow a clear definition, so that the term DQN is mostly linked to the whole training pipeline required to reach good estimates of the optimal $Q$ function. For example, in the original paper \cite{dqn} DeepMind researchers use an initial CNN (Convolutional Neural Network), since their input is represented by videogame frames, followed by an MLP (Multi-Layer Perceptron). Instead, the original Harvest implementation \cite{harvest} only relies on the final fully-connected layers, where the number of input neurons is given by the linearization of the selected observation, the number of hidden cells and the number of hidden layers are hyperparameters, while the number of outputs is equal to the size of the action space. 
 
 Another thing to notice is that the weights used for the target versus the current (presumably non-optimal) $Q$ values are different. In practical terms, a separate network is used to estimate the TD target. This target network has the same architecture as the function approximator but with frozen parameters. Every $T$ steps (a hyperparameter) the parameters from the $Q$-network are copied to the target network. This leads to more stable training because it keeps the target function fixed (for a while). Because of this, assuming $\theta$ to represent the current network weights and $\theta^{-}$ the target network weights, the loss function is updated as follows:
 $$
 L(\theta)=\mathbb{E}_{(s_t,a_t,r_{t+1},s_{t+1})}\left[\left(r_{t+1}+\gamma\max_{a_{t+1}}Q_{\theta^{-}}(s_{t+1}, a_{t+1}) - Q_{\theta}(s_t, a_t)\right)^2\right]
 $$
 
-One important issue of standard DQNs is that they tend to overestimate $Q$ values (which is mostly due to the $\max$ operator in the Bellman optimality equation), leading to unstable training and low quality policies. To mitigate the issue, in \cite{double-dqn} and \cite{dueling-dqn} authors propose two popular DQN variants, the double and dueling ones, respectively.
+One important issue with standard DQNs is that they tend to overestimate $Q$ values (which is mostly due to the $\max$ operator in the Bellman optimality equation), leading to unstable training and low quality policies. To mitigate this issue, in \cite{double-dqn} and \cite{dueling-dqn} authors propose two popular DQN variants, the double and dueling ones, respectively.
 
 \subsection{Policy gradient techniques}
+Policy gradient methods directly parametrize the policy and optimize it, instead of relying on proxy measures such as the $Q$ function. The generic pipeline to follow in such algorithms is given in \ref{alg:pg} and small adjustments span different popular techniques. For example, if we get rid of the advantage estimate and directly use returns in the loss function, we obtain REINFORCE \cite{reinforce}. Moreover, if we set the loss function to \ref{eq:vpg} we obtain a Vanilla Policy Gradient (VPG) implementation; if we set it to \ref{eq:trpo} we get the Trust Region Policy Optimization (TRPO) algorithm \cite{trpo}; and if use loss \ref{eq:ppo} we get the Proximal Policy Optimization (PPO) method \cite{ppo}.
 
-\begin{algorithm}
+\begin{algorithm}[h]
   \caption{Generic policy gradient pipeline}
+  \label{alg:pg}
   \begin{algorithmic}[1]
     \Require policy $\theta_p^{(0)}$, baseline $\theta_b^{(0)}$, epochs $E$, batch size $B$, max steps $M$
     \State $e \gets 0$
     \While{$e < E$}
-      \State Build a pool of trajectories $T_e=\{t_1,\dots,t_B\}$ by running policy $\pi(\theta_p^{(e)})$
-      \State Compute rewards-to-go $\hat{R}_i^{(e)}=[\hat{R}_i^{(0)}, \dots, \hat{R}_i^{(M)}]$ for each trajectory $i$
+      \State Build a pool of trajectories $T_e=\{t_1,\dots,t_B\}$ by running policy $\pi(\theta_p^{(e)})$, with $t_i=[t_i^{(0)},\dots,t_i^{(M)}]$ and $t_i^{(j)}=(s_i^{(j)}, a_i^{(j)}, r_i^{(j)}, s_i^{(j+1)})$
+      \State Compute rewards-to-go $\hat{R}_i^{(e)}=[\hat{R}_i^{(e_0)}, \dots, \hat{R}_i^{(e_M)}]$ for each trajectory $i$
       \State Compute values as $\hat{V}_i^{(e)}=V(s_i;\theta_b^{(e)}), s_i \in t_i$ for each trajectory $i$
       \State Compute advantage estimates as $\hat{A}_i^{(e)}=(\hat{R}_i-\hat{V}_i)$
       \State Compute log-probabilities of actions as $\hat{P}_i^{(e)}=\pi(s_i;\theta_p^{(e)}), s_i \in t_i$ for each trajectory $i$
-      \State Compute model loss and back-propagate
+      \State Compute loss (\ref{eq:vpg}, \ref{eq:trpo} or \ref{eq:ppo}) and back-propagate
     \EndWhile
   \end{algorithmic}
 \end{algorithm}
 
+In all loss functions \ref{eq:vpg}, \ref{eq:trpo} and \ref{eq:ppo} the first term is the loss of the policy network, i.e. the one that outputs log-probabilities for each action in the space, while the second term is the loss of the value network (or baseline network), i.e. the one which outputs a single value summarizing the goodness of the input state. The policy loss is a standard Cross Entropy (CE) between log-probabilities computed by the policy network (adjusted depending on the algorithm) and actual actions performed by agents at trajectory collection time, while the value loss is a Mean Squared Error (MSE) one between computed values and actual returns.
+
 \begin{equation}
+  \label{eq:vpg}
   \begin{aligned}
-    L_{VPG}={} & CE(\hat{P}_i^{(e)}\cdot \hat{A}_i^{(e)}, A) \\
-    & \alpha\cdot MSE(\hat{V}_i^{(e)}, \hat{R}_i^{(e)})
+    L_{VPG}={} & CE\left(\hat{P}_i^{(e)}\cdot \hat{A}_i^{(e)}, A\right) \\
+    & + \alpha\cdot MSE\left(\hat{V}_i^{(e)}, \hat{R}_i^{(e)}\right)
   \end{aligned}
 \end{equation}
 
+The KL divergence term in the TRPO objective is implemented through regularization and the network is trained with standard SGD, instead of relying on conjugate gradient algorithms as proposed in the original paper \cite{trpo}. Given that using a penalty term instead of an hard constraint leaves the optimization problem effectively unconstrained, it is difficult to select a single value of the hyperparameter $\beta$ to perform well across every instance of a RL environment. Because of this, as proposed in \cite{ppo}, we implement a $\beta$ update strategy, to adjust the hyperparameter during learning: given the KL divergence $d$ and a target KL divergence $d_{targ}$, if $d<d_{targ}/1.5$ then $\beta\leftarrow\beta/2$; otherwise, if $d>d_{targ}\times 1.5$ then $\beta\leftarrow\beta\times 2$.
+
 \begin{equation}
+  \label{eq:trpo}
   \begin{aligned}
-    L_{TRPO}={} & CE(\frac{\hat{P}_i^{(e)}}{\hat{P}_i^{(e-1)}}\cdot \hat{A}_i^{(e)}, A) \\
-    & + \alpha\cdot MSE(\hat{V}_i^{(e)}, \hat{R}_i^{(e)}) \\
-    & - \beta\cdot KL(\pi(\theta_p^{(e-1)}), \pi(\theta_p^{(e)}))
+    L_{TRPO}={} & CE\left(\frac{\hat{P}_i^{(e)}}{\hat{P}_i^{(e-1)}}\cdot \hat{A}_i^{(e)}, A\right) \\
+    & + \alpha\cdot MSE\left(\hat{V}_i^{(e)}, \hat{R}_i^{(e)}\right) \\
+    & - \beta\cdot KL\left(\pi(\theta_p^{(e-1)}), \pi(\theta_p^{(e)})\right)
   \end{aligned}
 \end{equation}
 
+PPO revisits and simplifies the idea used in TRPO of penalizing relatively big changes in the policy from one parameters update to the next one. To do so, it uses a custom objective that behaves differently depending on the sign of the advantage: if positive (i.e. when the selected action gets a better outcome than expected) the probability ratio is clipped at $1+\epsilon$; if negative, the probability ratio is clipped at $1-\epsilon$. The clipped objective removes the incentive to move the probability ratio outside of the region $[1-\epsilon, 1+\epsilon]$. The minimum between the unclipped and the clipped objective serves as a way to only consider changes in probability ratios that will make the objective worse. The final loss term, $S$, is an entropy bonus to ensure sufficient exploration.
+
 \begin{equation}
+  \label{eq:ppo}
   \begin{aligned}
-    L_{PPO}={} & CE(\min(r^{(e)}\cdot \hat{A}_i^{(e)}, clip(r^{(e)}, 1-\epsilon, 1+\epsilon)\cdot \hat{A}_i^{(e)}), A) \\
-    & - \alpha\cdot MSE(\hat{V}_i^{(e)}, \hat{R}_i^{(e)}) \\
-    & + \gamma\cdot S(\pi(\theta_p^{(e)})), r^{(e)}=\frac{\hat{P}_i^{(e)}}{\hat{P}_i^{(e-1)}}
+    L_{PPO}={} & CE\left(\min\left(\frac{\hat{P}_i^{(e)}}{\hat{P}_i^{(e-1)}}\cdot \hat{A}_i^{(e)}, clip\left(\frac{\hat{P}_i^{(e)}}{\hat{P}_i^{(e-1)}}, 1-\epsilon, 1+\epsilon\right)\cdot \hat{A}_i^{(e)}\right), A\right) \\
+    & - \alpha\cdot MSE\left(\hat{V}_i^{(e)}, \hat{R}_i^{(e)}\right) \\
+    & + \gamma\cdot S\left(\pi(\theta_p^{(e)})\right) \\
   \end{aligned}
 \end{equation}
 
