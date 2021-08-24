@@ -39,7 +39,7 @@ CPR problems are mainly categorized in two buckets: provision, which deals with 
 Modeling CPR appropriation problems with artificial agents poses great challenges as such problems tend to have what's called a socially-deficient Nash equilibrium, meaning that the choice to appropriate is tipically dominant w.r.t. leaving the resource where it is to allow for re-growth. This is because the choice to restrain leads to no individual benefit, but to the cost of CPR exploitation by others. Thus, having a socially deficient Nash equilibrium means that if agents were to collaborate, each one of them would probably obtain far more resources than if they were to act in a completely independent way.
 
 \section{The commons game}
-The commons game, usually referred to as Harvest \cite{harvest} or Gathering \cite{sequential-social-dilemmas}, is a simple grid-like environment in which agents have to collect apples (resources). The catch is that the apple re-growth rate depends on the spatial configuration of the uncollected apples (stock): for each empty location $l$, $p_t(L)$ is the probability that a new apple will grow at location $l$ in the next time-step $t+1$, where $L$ gives the number of already spawned apples in a ball of radius $2$ centered around position $l$: 
+The commons game, usually referred to as Harvest \cite{harvest} or Gathering \cite{sequential-social-dilemmas}, is a simple grid-like environment in which agents have to collect apples (resources)\footnote{The environment is re-implemented from scratch to be compatible with OpenAI Gym \cite{gym}, as the original code is not publicly available.}. The catch is that the apple re-growth rate depends on the spatial configuration of the uncollected apples (stock): for each empty location $l$, $p_t(L)$ is the probability that a new apple will grow at location $l$ in the next time-step $t+1$, where $L$ gives the number of already spawned apples in a ball of radius $2$ centered around position $l$: 
 
 \[
   p_t(L)= 
@@ -51,12 +51,12 @@ The commons game, usually referred to as Harvest \cite{harvest} or Gathering \ci
   \end{cases}
 \]
 
-At time-step $t$, each agent $j$ sees a local observation $o_j^{(t)}\in\mathbb{R}^{3\times20\times21}$ that spans $20$ grid squares ahead and $10$ grid squares on each side of its position (spread over $3$ channels to form an RGB image). Such observation is dependent on the agent's location and orientation (out of the $4$ cardinal directions $N, E, S, W$) on the grid. Each agent can then select the best action (according to its policy) out of $7$ possibilities: step forward, step backward, step left, step right, rotate left, rotate right and stand still. The goal is to maximize overall resource collection without depleting the stock: beware that each agent receives a reward of $+1$ when they collect an apple and no other reward is given.
+At time-step $t$, each agent $i$ sees a local observation $o_i^{(t)}\in\mathbb{R}^{3\times20\times21}$ that spans $20$ grid squares ahead and $10$ grid squares on each side of its position (spread over $3$ channels to form an RGB image). Such observation is dependent on the agent's location and orientation (out of the $4$ cardinal directions $N, E, S, W$) on the grid. Each agent can then select the best action (according to its policy) out of $7$ possibilities: step forward, step backward, step left, step right, rotate left, rotate right and stand still. The goal is to maximize overall resource collection without depleting the stock: beware that each agent receives a reward of $+1$ when they collect an apple and no other reward is given.
 
 \subsection{Tagging and gifting}
 In the original environment, agents have an additional action available: tagging. Agents may tag one another with a time-out (or laser) beam: the effect of being hit with the beam is that such agents would be removed from the game for $D$ time-steps ($D=25$ in the original implementation). Tagging has no direct rewards or punishments, but it gives agents the possibility to effectively lower the environment population, thus giving them more time to secure resources.
 
-In order to let agents cooperate with each other, we rely on Social Learning \cite{social-learning}, a new class of algorithms that enables agents to reshape the reward function of other agents with the goal of promoting cooperation and achieving higher global rewards in mixed-motive games. The form of Social Learning we opted for is Gifting, a peer rewarding strategy which allows agents to reward other agents as part of their action space. Beware that the rewards that agent $a_i$ obtains from receiving a gift are independent from those it receives by acting upon the environment. With this extension, agents are equipped with an additional gifting beam, such that all agents in the beam receive a gift from such agent: the gift $g$ (defaults to $g=1$) is equally split among all tagged agents. Different gifting mechanisms have been implemented:
+In order to let agents cooperate with each other, we rely on Social Learning \cite{social-learning}, a new class of algorithms that enables agents to reshape the reward function of other agents with the goal of promoting cooperation and achieving higher global rewards in mixed-motive games. The form of Social Learning we opted for is Gifting, a peer rewarding strategy which allows agents to reward other agents as part of their action space. Beware that the rewards that agent $i$ obtains from receiving a gift are independent from those it receives by acting upon the environment. With this extension, agents are equipped with an additional gifting beam, such that all agents within the beam range receive a gift from such agent: the gift $g$ (defaults to $g=1$) is equally split among all tagged agents. Different gifting mechanisms have been implemented:
 \begin{enumerate}
   \item Zero-sum: imposes no restriction on the number of times an agent can pick the gifting action within an episode (each time it sends a gift of value $g$, it incurs an immediate penalty of $-g$);
   \item Fixed Budget: agents are allocated a fixed "budget" of size $B$ at the start of each episode, which is decremented by $g$ each time the agent chooses to gift (once the budget is depleted, gifting is no longer available as an action until the end of the episode);
@@ -78,6 +78,37 @@ Since the returns of a single agent are poor indicators of the group's behavior 
   \end{aligned}
 \end{equation}
 
+\section{Results}
+
+Table \ref{table:results} shows results (in terms of social outcome metrics) obtained by training $11$ agents on a $39\times19$ grid with $1000$ maximum steps for each episode. The DQN module is trained using RLlib \cite{rllib}, while policy gradient methods are implemented from scratch\footnote{The code is publicly available on \href{https://github.com/Wadaboa/cpr-appropriation}{Github}.}. Training experiments are logged on \href{https://wandb.ai/wadaboa/cpr-appropriation}{W\&B} \cite{wandb}.
+
+All neural networks are Multi-Layer Perceptrons (MLPs) with an input size of $1260$ (given by the observation dimension $3\times20\times21$), $2$ hidden layers with $32$ units each and an output layer composed of either a single neuron (for value functions) or as many units as there are actions (for policy functions).
+
+For DQN, the exploration strategy is $\epsilon$-greedy with a linear decay from $1.0$ to $0.1$ over the course of the episode, while all the other hyperparameters are left as RLlib's defaults. For TRPO $\beta=1.0$ and $d_{targ}=0.01$, while for PPO $c_1=1.0$, $c_2=0.0$ and $\epsilon=0.2$.
+
+\begin{table}[h]
+  \caption{Results}
+  \label{table:results}
+  \centering
+  \begin{tabular}{lllll}
+    \toprule
+    & U     & E     & S & P \\
+    \cmidrule(r){2-5}
+    DQN & $0.0$ & $0.0$ & $0.0$ & $0.0$ \\
+    VPG & $0.0$ & $0.0$ & $0.0$ & $0.0$ \\
+    TRPO & $0.0$ & $0.0$ & $0.0$ & $0.0$ \\
+    PPO & $0.0$ & $0.0$ & $0.0$ & $0.0$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Conclusions}
+
+\newpage
+\bibliography{references}
+
+\newpage
+\appendix
 \section{Reinforcement learning setting}
 
 \subsection{Value-based methods}
@@ -105,17 +136,17 @@ Policy gradient methods directly parametrize the policy and optimize it, instead
     \Require policy $\theta_p^{(0)}$, baseline $\theta_b^{(0)}$, epochs $E$, batch size $B$, max steps $M$
     \State $e \gets 0$
     \While{$e < E$}
-      \State Build a pool of trajectories $T_e=\{t_1,\dots,t_B\}$ by running policy $\pi(\theta_p^{(e)})$, with $t_i=[t_i^{(0)},\dots,t_i^{(M)}]$ and $t_i^{(j)}=(s_i^{(j)}, a_i^{(j)}, r_i^{(j)}, s_i^{(j+1)})$
-      \State Compute rewards-to-go $\hat{R}_i^{(e)}=[\hat{R}_i^{(e_0)}, \dots, \hat{R}_i^{(e_M)}]$ for each trajectory $i$
-      \State Compute values as $\hat{V}_i^{(e)}=V(s_i;\theta_b^{(e)}), s_i \in t_i$ for each trajectory $i$
-      \State Compute advantage estimates as $\hat{A}_i^{(e)}=(\hat{R}_i-\hat{V}_i)$
-      \State Compute log-probabilities of actions as $\hat{P}_i^{(e)}=\pi(s_i;\theta_p^{(e)}), s_i \in t_i$ for each trajectory $i$
+      \State Build a pool of trajectories $T^{(e)}=\{t_1^{(e)},\dots,t_B^{(e)}\}$ by running policy $\pi(\theta_p^{(e)})$, \newline\hspace*{1.5em}with $t_i^{(e)}=[t_i^{(e_0)},\dots,t_i^{(e_M)}]$ and $t_i^{(e_j)}=(s_i^{(e_j)}, a_i^{(e_j)}, r_i^{(e_j)}, s_i^{(e_{j+1})})$
+      \State Compute rewards-to-go $\hat{R}_i^{(e)}=[\hat{R}_i^{(e_0)}, \dots, \hat{R}_i^{(e_M)}]$ 
+      \State Compute values as $\hat{V}_i^{(e)}=V(s_i^{(e_j)};\theta_b^{(e)})$ 
+      \State Compute advantage estimates as $\hat{A}_i^{(e)}=(\hat{R}_i^{(e)}-\hat{V}_i^{(e)})$
+      \State Compute log-probabilities of actions as $\hat{P}_i^{(e)}=\pi(s_i^{(e_j)};\theta_p^{(e)})$ \vspace{1mm}
       \State Compute loss (\ref{eq:vpg}, \ref{eq:trpo} or \ref{eq:ppo}) and back-propagate
     \EndWhile
   \end{algorithmic}
 \end{algorithm}
 
-In all loss functions \ref{eq:vpg}, \ref{eq:trpo} and \ref{eq:ppo} the first term is the loss of the policy network, i.e. the one that outputs log-probabilities for each action in the space, while the second term is the loss of the value network (or baseline network), i.e. the one which outputs a single value summarizing the goodness of the input state. The policy loss is a standard Cross Entropy (CE) between log-probabilities computed by the policy network (adjusted depending on the algorithm) and actual actions performed by agents at trajectory collection time, while the value loss is a Mean Squared Error (MSE) one between computed values and actual returns.
+In all loss functions \ref{eq:vpg}, \ref{eq:trpo} and \ref{eq:ppo} the first term is the loss of the policy network, i.e. the one that outputs log-probabilities for each action in the space, while the second term is the loss of the value network (or baseline network), i.e. the one which outputs a single value summarizing the goodness of the input state. The policy loss is a standard Cross Entropy (CE) between log-probabilities computed by the policy network (adjusted depending on the algorithm) and actual actions ($A$) performed by agents at trajectory collection time, while the value loss is a Mean Squared Error (MSE) one between computed values and actual returns.
 
 \begin{equation}
   \label{eq:vpg}
@@ -142,15 +173,10 @@ PPO revisits and simplifies the idea used in TRPO of penalizing relatively big c
   \label{eq:ppo}
   \begin{aligned}
     L_{PPO}={} & CE\left(\min\left(\frac{\hat{P}_i^{(e)}}{\hat{P}_i^{(e-1)}}\cdot \hat{A}_i^{(e)}, clip\left(\frac{\hat{P}_i^{(e)}}{\hat{P}_i^{(e-1)}}, 1-\epsilon, 1+\epsilon\right)\cdot \hat{A}_i^{(e)}\right), A\right) \\
-    & - \alpha\cdot MSE\left(\hat{V}_i^{(e)}, \hat{R}_i^{(e)}\right) \\
-    & + \gamma\cdot S\left(\pi(\theta_p^{(e)})\right) \\
+    & - c_1\cdot MSE\left(\hat{V}_i^{(e)}, \hat{R}_i^{(e)}\right) \\
+    & + c_2\cdot S\left(\pi(\theta_p^{(e)})\right) \\
   \end{aligned}
 \end{equation}
 
-\section{Results}
-
-\section{Conclusions}
-
-\bibliography{references}
 
 \end{document}
