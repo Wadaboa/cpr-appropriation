@@ -4,7 +4,7 @@
 	<img src="assets/env-example.png" />
 </p>
 
-This repository contains different implementations of policy gradient RL techniques, that have been applied to the Harvest (or Gathering) multi-agent environment, introduced in [[1]](#1). The environment is implemented from scratch to be compatible with [OpenAI Gym](https://gym.openai.com/). Policy gradient algorithms (i.e. REINFORCE, VPG, TRPO and PPO) rely on custom implementations (see the [policies.py](policies.py) module), while value-based methods (i.e. the DQN baseline) rely on [RLlib](https://docs.ray.io/en/latest/rllib.html) (see the [rllib.py](rllib.py) module). Take a look at the full [report](report/report.pdf) for a detailed explanation of the work done.
+This repository contains different implementations of policy gradient RL techniques, that have been applied to the Harvest (or Gathering) multi-agent environment, introduced in [[1]](#1). The environment is implemented from scratch to be compatible with [OpenAI Gym](https://gym.openai.com/). Policy gradient algorithms (i.e. REINFORCE, VPG, TRPO and PPO) rely on custom implementations (see the [policies.py](policies.py) module), while value-based methods (i.e. the DQN baseline) rely on [RLlib](https://docs.ray.io/en/latest/rllib.html) (see the [rllib.py](rllib.py) module). Moreover, cooperation between agents is implemented through a social learning scheme named gifting, introduced in [[2]](#2). Take a look at the full [report](report/report.pdf) for a detailed explanation of the work done.
 
 ## Environment
 
@@ -74,4 +74,8 @@ If you want to use the CPR environment with RLlib, have a look at the [rllib.py]
 - <a id="1">[1]</a>
   _Julien Perolat, Joel Z. Leibo, Vinicius Zambaldi, Charles Beattie, Karl Tuyls, Thore Graepel (2017)_,\
   **A multi-agent reinforcement learning model of common-pool resource appropriation**,\
-  CoRR.
+  Advances in Neural Information Processing Systems 30: Annual Conference on Neural Information Processing Systems.
+- <a id="2">[2]</a>
+  _Andrei Lupu, Doina Precup (2020)_,\
+  **Gifting in Multi-Agent Reinforcement Learning**,\
+  Proceedings of the 19th International Conference on Autonomous Agents and MultiAgent Systems.
