@@ -106,6 +106,12 @@ class Trajectory:
         """
         return self.current_timestep
 
+    def __repr__(self):
+        return f"Trajectory(timesteps={self.current_timestep})"
+
+    def __str__(self):
+        return self.__repr__()
+
 
 class TrajectoryPool:
     """
@@ -142,50 +148,34 @@ class TrajectoryPool:
             state, action, action_probs, reward, next_state
         )
 
-    def tensorify(
-        self, max_steps, state_shape, num_actions, discount=1, ignore_index=-100
-    ):
+    def tensorify(self, discount=1):
         """
         Convert the current pool of trajectories to
         a set of PyTorch tensors
         """
-        assert isinstance(
-            state_shape, tuple
-        ), "The given state shape should be a tuple of dimensions"
-
-        # Initialize tensors
-        states = torch.full(
-            (len(self.trajectories), max_steps, *state_shape),
-            ignore_index,
-            dtype=torch.float32,
-        )
-        actions = torch.full(
-            (len(self.trajectories), max_steps), ignore_index, dtype=torch.int64
-        )
-        action_probs = torch.full(
-            (len(self.trajectories), max_steps, num_actions),
-            ignore_index,
-            dtype=torch.float32,
-        )
-        returns = torch.full_like(actions, ignore_index, dtype=torch.float32)
-        next_states = torch.full_like(states, ignore_index, dtype=torch.float32)
-
-        # Update tensors for each trajectory
-        for i, trajectory in enumerate(self.trajectories):
-            t_states = trajectory.get_states(as_torch=True)
-            t_actions = trajectory.get_actions(as_torch=True)
-            t_action_probs = trajectory.get_action_probs(as_torch=True)
-            t_returns = trajectory.get_returns(
-                discount=discount, to_go=True, as_torch=True
+        states, actions, action_probs, returns, next_states = [], [], [], [], []
+        for trajectory in self.trajectories:
+            states.append(trajectory.get_states(as_torch=True))
+            actions.append(trajectory.get_actions(as_torch=True))
+            action_probs.append(trajectory.get_action_probs(as_torch=True))
+            returns.append(
+                trajectory.get_returns(discount=discount, to_go=True, as_torch=True)
             )
-            t_next_states = trajectory.get_next_states(as_torch=True)
-            states[i, : t_states.shape[0]] = t_states
-            actions[i, : t_actions.shape[0]] = t_actions
-            action_probs[i, : t_action_probs.shape[0]] = t_action_probs
-            returns[i, : t_returns.shape[0]] = t_returns
-            next_states[i, : t_next_states.shape[0]] = t_next_states
+            next_states.append(trajectory.get_next_states(as_torch=True))
 
-        return states, actions, action_probs, returns, next_states
+        return (
+            torch.cat(states, dim=0).to(dtype=torch.float32),
+            torch.cat(actions, dim=0).to(dtype=torch.int64),
+            torch.cat(action_probs, dim=0).to(dtype=torch.float32),
+            torch.cat(returns, dim=0).to(dtype=torch.float32),
+            torch.cat(next_states, dim=0).to(dtype=torch.float32),
+        )
+
+    def get_timesteps(self):
+        """
+        Compute how many time steps there are in the pool
+        """
+        return sum(len(t) for t in self.trajectories)
 
     def __getitem__(self, i):
         """
@@ -198,3 +188,9 @@ class TrajectoryPool:
         Return how many trajectories we have in the pool
         """
         return len(self.trajectories)
+
+    def __repr__(self):
+        return f"TrajectoryPool(timesteps={self.get_timesteps()})"
+
+    def __str__(self):
+        return self.__repr__()

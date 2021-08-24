@@ -8,7 +8,14 @@ class MLP(nn.Module):
     fixed-size input vectors
     """
 
-    def __init__(self, input_size, hidden_dims, output_size, non_linearity=nn.ReLU):
+    def __init__(
+        self,
+        input_size,
+        hidden_dims,
+        output_size,
+        non_linearity=nn.ReLU,
+        log_softmax=True,
+    ):
         assert isinstance(
             input_size, int
         ), "Input dimensions should be given as an integer"
@@ -28,12 +35,12 @@ class MLP(nn.Module):
                 non_linearity(),
             ]
         self.mlp = nn.Sequential(*linear_layers)
-        self.out = nn.LogSoftmax()
+        self.out = nn.LogSoftmax(dim=-1) if log_softmax else nn.Identity()
 
     def forward(self, x):
         """
         Perform a single example or batch forward pass
         """
-        start_dim = 0 if not self.training else 2
+        start_dim = 0 if not self.training else 1
         x = self.mlp(torch.flatten(x, start_dim=start_dim))
         return self.out(x)

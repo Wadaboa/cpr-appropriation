@@ -6,35 +6,10 @@ import numpy as np
 import torch
 import torch.optim as optim
 import torch.nn as nn
-import wandb
 from torch.distributions import Categorical
 from loguru import logger
 
-from . import memory
-
-
-IGNORE_INDEX = -100
-
-
-def init_wandb(config):
-    """
-    Return a new W&B run to be used for logging purposes
-    """
-    assert isinstance(config, dict), "The given W&B config should be a dictionary"
-    assert "api_key" in config, "Missing API key value in W&B config"
-    assert "project" in config, "Missing project name in W&B config"
-    assert "entity" in config, "Missing entity name in W&B config"
-    assert "group" in config, "Missing group name in W&B config"
-
-    os.environ["WANDB_API_KEY"] = config["api_key"]
-    exclude_keys = ["api_key", "project", "entity", "group"]
-    remaining_config = {k: v for k, v in config.items() if k not in exclude_keys}
-    return wandb.init(
-        project=config["project"],
-        entity=config["entity"],
-        group=config["group"],
-        config=remaining_config,
-    )
+from . import memory, utils
 
 
 class VPGPolicy:
@@ -42,60 +17,79 @@ class VPGPolicy:
     Vanilla Policy Gradient implementation
     """
 
-    def __init__(self, env, policy_nn, baseline_nn=None):
+    def __init__(self, env, policy_nn, baseline_nn=None, seed=42):
+        assert isinstance(
+            policy_nn, nn.Module
+        ), "The given policy network should be a PyTorch module"
+        assert baseline_nn is None or isinstance(
+            baseline_nn, nn.Module
+        ), "The given baseline network should be None or a PyTorch module"
+
         # Store parameters
         self.env = env
         self.policy_nn = policy_nn
         self.baseline_nn = baseline_nn
 
+        # Fix random seed
+        utils.set_seed(seed)
+
         # Define losses
         self.losses = dict()
-        self.losses["policy"] = nn.NLLLoss(ignore_index=IGNORE_INDEX, reduction="mean")
+        self.losses["policy"] = nn.NLLLoss(
+            ignore_index=utils.IGNORE_INDEX, reduction="mean"
+        )
         if self.baseline_nn is not None:
             self.losses["baseline"] = nn.MSELoss(reduction="mean")
 
     def train(
         self,
-        max_epochs,
-        lr=1e-3,
+        epochs,
+        steps_per_epoch=4000,
+        policy_lr=3e-4,
+        baseline_lr=1e-3,
         discount=0.99,
-        batch_size=32,
         save_every=None,
         checkpoints_path=None,
-        wandb=True,
+        enable_wandb=True,
         wandb_config=None,
+        max_episodes=None,
+        std_advs=True,
     ):
         """
         Train VPG by running the specified number of episodes and
         maximum time steps
         """
-        # Define optimizer
-        params = list(self.policy_nn.parameters())
+        # Define optimizer with different learning rates for
+        # policy and value networks
+        params = [{"params": list(self.policy_nn.parameters())}]
         if self.baseline_nn is not None:
-            params += list(self.baseline_nn.parameters())
-        optimizer = optim.Adam(params, lr=lr)
+            params += [
+                {"params": list(self.baseline_nn.parameters()), "lr": baseline_lr}
+            ]
+        optimizer = optim.Adam(params, lr=policy_lr)
 
         # Initialize wandb for logging
-        if wandb:
+        if enable_wandb:
             wandb_config = {
                 **wandb_config,
-                "epochs": max_epochs,
-                "lr": lr,
+                "epochs": epochs,
+                "policy_lr": policy_lr,
+                "baseline_lr": baseline_lr,
                 "discount": discount,
-                "batch_size": batch_size,
+                "steps_per_epoch": steps_per_epoch,
                 "baseline": self.baseline_nn is not None,
             }
-            wandb_run = init_wandb(config=wandb_config)
+            wandb_run = utils.init_wandb(config=wandb_config)
 
         # Iterate for the specified number of epochs
         metrics = defaultdict(int)
         current_episode = 0
-        for epoch in range(max_epochs):
-            logger.info(f"Epoch {epoch + 1} / {max_epochs}")
+        for epoch in range(epochs):
+            logger.info(f"Epoch {epoch + 1} / {epochs}")
 
             # Accumulate trajectories to fill-up a batch of examples
             trajectories = memory.TrajectoryPool()
-            for _ in range(batch_size // self.env.n_agents):
+            while trajectories.get_timesteps() < steps_per_epoch:
                 logger.info(f"Episode {current_episode + 1}")
                 episode_trajectories = self.execute_episode()
                 social_outcome_metrics = self.env.get_social_outcome_metrics()
@@ -106,13 +100,13 @@ class VPGPolicy:
                 current_episode += 1
 
             # Get a batch of (s, a, r) tuples
-            logger.info(f"Working with a batch size of {len(trajectories)}")
+            actual_batch_size = trajectories.get_timesteps()
+            if actual_batch_size > steps_per_epoch:
+                logger.warning(
+                    f"The actual batch size is {actual_batch_size}, instead of {steps_per_epoch}"
+                )
             states, actions, old_log_probs, returns, _ = trajectories.tensorify(
-                self.env.max_steps,
-                self.env.observation_space_size(flattened=False),
-                self.env.action_space_size(),
-                discount=discount,
-                ignore_index=IGNORE_INDEX,
+                discount=discount
             )
 
             # Compute log-probabilities of actions
@@ -131,6 +125,7 @@ class VPGPolicy:
                 values,
                 log_probs,
                 old_log_probs,
+                std_advs=std_advs,
             )
             logger.info(f"Total loss: {total_loss}")
 
@@ -139,7 +134,7 @@ class VPGPolicy:
             logger.info(f"Mean metrics: {mean_metrics}")
 
             # Log to wandb at end of epoch
-            if wandb:
+            if enable_wandb:
                 wandb_run.log({**mean_metrics, "loss": total_loss}, step=epoch)
 
             # Backprop
@@ -147,13 +142,30 @@ class VPGPolicy:
             total_loss.backward()
             optimizer.step()
 
-        # Save model checkpoints
-        if save_every is not None and epoch % save_every == 0:
-            logger.info(f"Saving model checkpoints to {checkpoints_path}")
-            self.save(checkpoints_path)
+            # Save model checkpoints
+            if save_every is not None and epoch % save_every == 0:
+                logger.info(f"Saving model checkpoints to {checkpoints_path}")
+                self.save(checkpoints_path)
+
+            # Exit due to maximum episodes
+            if max_episodes is not None and current_episode >= max_episodes:
+                logger.info(
+                    f"Reached the maximum number of episodes {max_episodes}, exiting"
+                )
+                break
 
         # Stop wandb logging
-        wandb_run.finish()
+        if enable_wandb:
+            wandb_run.finish()
+
+    def compute_advantages(self, returns, values, log_probs, std_advs=True):
+        """
+        Compute advantages and possibly standardize them
+        """
+        advantages = returns - values
+        if std_advs:
+            advantages = (advantages - advantages.mean()) / advantages.std()
+        return advantages.unsqueeze(-1).repeat(1, log_probs.shape[-1])
 
     def compute_loss(
         self,
@@ -162,13 +174,13 @@ class VPGPolicy:
         values,
         log_probs,
         old_log_probs=None,
+        std_advs=True,
     ):
         # Compute loss
-        advantage = (returns - values).unsqueeze(-1).repeat(1, 1, log_probs.shape[-1])
-        total_loss = self.losses["policy"](
-            torch.flatten(log_probs * advantage, start_dim=0, end_dim=1),
-            torch.flatten(actions),
+        advantages = self.compute_advantages(
+            returns, values, log_probs, std_advs=std_advs
         )
+        total_loss = self.losses["policy"](log_probs * advantages, actions)
         if self.baseline_nn is not None:
             total_loss += self.losses["baseline"](values, returns)
         return total_loss
@@ -260,6 +272,7 @@ class TRPOPolicy(VPGPolicy):
         env,
         policy_nn,
         baseline_nn,
+        seed=42,
         beta=1.0,
         kl_target=0.01,
     ):
@@ -269,31 +282,25 @@ class TRPOPolicy(VPGPolicy):
         assert kl_target is None or isinstance(
             kl_target, float
         ), "The KL divergence target should be given as a float"
-        super().__init__(env, policy_nn, baseline_nn=baseline_nn)
+        super().__init__(env, policy_nn, baseline_nn=baseline_nn, seed=seed)
         self.beta = beta
         self.kl_target = kl_target
         self.losses["constraint"] = nn.KLDivLoss(log_target=True, reduction="batchmean")
 
     def compute_loss(
-        self,
-        returns,
-        actions,
-        values,
-        log_probs,
-        old_log_probs=None,
+        self, returns, actions, values, log_probs, old_log_probs=None, std_advs=True
     ):
-        # Compute the advantage
-        advantage = (returns - values).unsqueeze(-1).repeat(1, 1, log_probs.shape[-1])
+        # Compute advantages
+        advantages = self.compute_advantages(
+            returns, values, log_probs, std_advs=std_advs
+        )
 
         # Compute the probability ratio
         probs_ratio = torch.exp(log_probs - old_log_probs)
 
         # Compute total loss as the sum of TRPO loss, baseline loss and
         # the trust region constraint
-        total_loss = self.losses["policy"](
-            torch.flatten(probs_ratio * advantage, start_dim=0, end_dim=1),
-            torch.flatten(actions),
-        )
+        total_loss = self.losses["policy"](probs_ratio * advantages, actions)
         total_loss += self.losses["baseline"](values, returns)
 
         # Use KL divergence as regularizer and possibily update beta
@@ -318,6 +325,7 @@ class PPOPolicy(VPGPolicy):
         env,
         policy_nn,
         baseline_nn,
+        seed=42,
         c1=1.0,
         c2=0.0,
         eps=0.2,
@@ -325,7 +333,7 @@ class PPOPolicy(VPGPolicy):
         assert isinstance(c1, float) and isinstance(
             c2, float
         ), "The c1 and c2 hyperparameters should be given as floats"
-        super().__init__(env, policy_nn, baseline_nn=baseline_nn)
+        super().__init__(env, policy_nn, baseline_nn=baseline_nn, seed=seed)
         self.c1 = c1
         self.c2 = c2
         self.eps = eps
@@ -337,25 +345,25 @@ class PPOPolicy(VPGPolicy):
         values,
         log_probs,
         old_log_probs=None,
+        std_advs=True,
     ):
-        # Compute the advantage
-        advantage = (returns - values).unsqueeze(-1).repeat(1, 1, log_probs.shape[-1])
+        # Compute advantages
+        advantages = self.compute_advantages(
+            returns, values, log_probs, std_advs=std_advs
+        )
 
         # Compute the probability ratio
         probs_ratio = torch.exp(log_probs - old_log_probs)
 
         # Compute PPO loss as the minimum of the clipped and unclipped losses
         objective = torch.min(
-            probs_ratio * advantage,
-            torch.clamp(probs_ratio, 1 - self.eps, 1 + self.eps) * advantage,
+            probs_ratio * advantages,
+            torch.clamp(probs_ratio, 1 - self.eps, 1 + self.eps) * advantages,
         )
 
         # Compute total loss as the sum of PPO loss, baseline loss and
         # entropy of the categorical action distribution
-        total_loss = self.losses["policy"](
-            torch.flatten(objective, start_dim=0, end_dim=1),
-            torch.flatten(actions),
-        )
+        total_loss = self.losses["policy"](objective, actions)
         total_loss -= self.c1 * self.losses["baseline"](values, returns)
         total_loss += self.c2 * Categorical(probs=torch.exp(log_probs)).entropy().mean()
 
