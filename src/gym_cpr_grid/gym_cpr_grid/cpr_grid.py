@@ -300,9 +300,6 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             infos[agent_handle]["gifting"] = agent_handle in gifting_agents
             infos[agent_handle]["gifted"] = agent_handle in gifted_agents
 
-        # Add social outcome metrics to info dict
-        infos["__all__"] = self.get_social_outcome_metrics()
-
         # Check if we reached end of episode
         dones["__all__"] = False
         self.elapsed_steps += 1
@@ -317,6 +314,9 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         for agent_handle in range(self.n_agents):
             observations[agent_handle] = self._get_observation(agent_handle)
             self.rewards_history[agent_handle].append(rewards[agent_handle])
+
+        # Add social outcome metrics to info dict
+        infos["__all__"] = self.get_social_outcome_metrics()
 
         # Respawn resources
         self._respawn_resources()
@@ -611,15 +611,15 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         of sum of rewards
         """
         returns = self._get_returns()
-        return np.sum(returns) / self.elapsed_steps
+        return np.mean(returns)
 
-    def equality_metric(self, eps=1e-6):
+    def equality_metric(self):
         """
         The Equality metric (E) is defined using the Gini coefficient
         """
         returns = self._get_returns()
         numerator = np.sum([abs(ri - rj) for ri in returns for rj in returns])
-        return 1 - (numerator / (2 * len(returns) * np.sum(returns) + eps))
+        return 1 - (numerator / (2 * self.n_agents * np.sum(returns) + 1e-6))
 
     def sustainability_metric(self):
         """
@@ -630,8 +630,9 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         for agent_handle in range(self.n_agents):
             rewards = self.rewards_history[agent_handle]
             ti = np.argwhere(np.array(rewards) > 0)
-            times.append(self._max_episode_steps if len(ti) == 0 else np.mean(ti))
-        return np.mean(times)
+            if len(ti) != 0:
+                times.append(np.mean(ti))
+        return np.mean(times) if len(times) > 0 else 0.0
 
     def peace_metric(self):
         """
@@ -648,7 +649,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
                     for tagging_checkpoint in self.tagging_history
                 ]
             )
-        return (self.n_agents * self.elapsed_steps - total) / self.elapsed_steps
+        return (self.n_agents * self.elapsed_steps - total) / self.n_agents
 
     def get_social_outcome_metrics(self):
         """

@@ -105,6 +105,7 @@ class VPGPolicy:
             # Accumulate trajectories to fill-up a batch of examples
             trajectories = memory.TrajectoryPool()
             epoch_infos = defaultdict(list)
+            epoch_episodes = 0
             while trajectories.get_timesteps() < steps_per_epoch:
                 logger.info(f"Episode {current_episode + 1}")
                 (
@@ -124,6 +125,7 @@ class VPGPolicy:
                     f"{np.mean(mean_returns[-episodes_mean_return:])}"
                 )
                 current_episode += 1
+                epoch_episodes += 1
 
             # Get a batch of (s, a, r) tuples
             actual_batch_size = trajectories.get_timesteps()
@@ -158,12 +160,19 @@ class VPGPolicy:
 
             # Compute mean epoch metrics
             if len(epoch_infos) > 0:
-                epoch_infos = {k: v / (epoch + 1) for k, v in epoch_infos.items()}
+                epoch_infos = {k: np.mean(v) for k, v in epoch_infos.items()}
                 logger.info(f"Epoch infos: {epoch_infos}")
 
             # Log to wandb at end of epoch
             if enable_wandb:
-                wandb_run.log({**epoch_infos, "loss": total_loss}, step=epoch)
+                wandb_run.log(
+                    {
+                        **epoch_infos,
+                        "loss": total_loss,
+                        "mean_return": np.mean(mean_returns[-epoch_episodes:]),
+                    },
+                    step=epoch,
+                )
 
             # Backprop
             optimizer.zero_grad()
@@ -226,7 +235,6 @@ class VPGPolicy:
 
         # Iterate as long as agents are not done or until
         # we reach the maximum number of time-steps
-        all_infos = defaultdict(list)
         for _ in range(self.max_steps):
             # Compute the best actions based on the current policy
             action_dict, action_probs = dict(), dict()
@@ -243,11 +251,6 @@ class VPGPolicy:
 
             # Perform a step in the environment
             new_observations, rewards, dones, infos = self.env.step(action_dict)
-
-            # Sum all agents' metrics
-            if "__all__" in infos:
-                for k, v in infos["__all__"].items():
-                    all_infos[k] += [v]
 
             # Update each agent's trajectory
             for agent_handle in range(self.n_agents):
@@ -267,14 +270,14 @@ class VPGPolicy:
                 logger.debug(f"Early stopping, all agents done")
                 break
 
-        # Compute a mean of episode infos
-        if "__all__" in infos:
-            all_infos = {k: np.mean(v) for k, v in all_infos.items()}
+        # Store episode infos
+        all_infos = infos["__all__"] if "__all__" in infos else dict()
 
         # Compute mean episode return
-        mean_return = np.mean(
-            [t.get_returns(discount=1, to_go=False) for t in trajectories]
-        )
+        agents_returns = [
+            t.get_returns(discount=1, to_go=False, as_torch=False) for t in trajectories
+        ]
+        mean_return = np.mean(agents_returns)
 
         return trajectories, all_infos, mean_return
 

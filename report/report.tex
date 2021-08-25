@@ -71,10 +71,10 @@ Since the returns of a single agent are poor indicators of the group's behavior 
 \begin{equation}
   \label{eq:metrics}
   \begin{aligned}
-    & U = \frac{\sum_{i=1}^N R_i}{T}\\
+    & U = \frac{1}{N}\sum_{i=1}^N R_i\\
     & E = 1 - \frac{\sum_{i=1}^N\sum_{j=1}^N |R_i-R_j|}{2N\sum_{i=1}^N R_i} \\
     & S = \frac{1}{N}\sum_{i=1}^N |\{t\mid r_i^{(t)}>0\}| \\
-    & P = \frac{NT-\sum_{i=1}^N\sum_{t=1}^T \mathbb{I}\{\text{agent } i \text{ timed-out on step } t\}}{T}
+    & P = \frac{NT-\sum_{i=1}^N\sum_{t=1}^T \mathbb{I}\{\text{agent } i \text{ timed-out on step } t\}}{N}
   \end{aligned}
 \end{equation}
 
