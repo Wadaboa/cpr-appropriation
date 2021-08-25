@@ -142,7 +142,7 @@ class VPGPolicy:
             log_probs = self.policy_nn(states)
 
             # Compute baseline
-            values = torch.zeros_like(returns)
+            values = torch.zeros_like(returns, device=utils.get_torch_device())
             if self.baseline_nn is not None:
                 self.baseline_nn.train(mode=True)
                 values = self.baseline_nn(states).squeeze()
@@ -240,9 +240,13 @@ class VPGPolicy:
             action_dict, action_probs = dict(), dict()
             for agent_handle in range(self.n_agents):
                 log_probs = self.policy_nn(
-                    torch.tensor(observations[agent_handle], dtype=torch.float32)
+                    torch.tensor(
+                        observations[agent_handle],
+                        dtype=torch.float32,
+                        device=utils.get_torch_device(),
+                    )
                 )
-                action_probs[agent_handle] = log_probs.detach().numpy()
+                action_probs[agent_handle] = log_probs.cpu().detach().numpy()
                 action = np.random.choice(
                     np.arange(self.action_space_size),
                     p=np.exp(action_probs[agent_handle]),

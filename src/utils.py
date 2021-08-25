@@ -93,3 +93,10 @@ def make_multi_agent(env, max_steps=1000):
             return self.env.render(mode)
 
     return MultiEnv(env)
+
+
+def get_torch_device():
+    """
+    Return a GPU PyTorch device (if one is available), otherwise a CPU
+    """
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")

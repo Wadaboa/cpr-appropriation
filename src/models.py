@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 
+from . import utils
+
 
 class MLP(nn.Module):
     """
@@ -27,6 +29,7 @@ class MLP(nn.Module):
         ), "Output dimensions should be given as an integer"
         super(MLP, self).__init__()
 
+        # Define architecture
         hidden_dims += [output_size]
         linear_layers = [nn.Linear(input_size, hidden_dims[0]), non_linearity()]
         for h in range(1, len(hidden_dims)):
@@ -36,6 +39,9 @@ class MLP(nn.Module):
             ]
         self.mlp = nn.Sequential(*linear_layers)
         self.out = nn.LogSoftmax(dim=-1) if log_softmax else nn.Identity()
+
+        # Transfer to device
+        self.to(utils.get_torch_device())
 
     def forward(self, x):
         """

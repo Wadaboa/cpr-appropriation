@@ -1,6 +1,8 @@
 import numpy as np
 import torch
 
+from . import utils
+
 
 class Trajectory:
     """
@@ -16,6 +18,7 @@ class Trajectory:
         self.rewards = []
         self.next_states = []
         self.current_timestep = 0
+        self.device = utils.get_torch_device()
 
     def add_timestep(self, state, action, action_probs, reward, next_state):
         """
@@ -33,14 +36,22 @@ class Trajectory:
         Return the list of states in the current trajectory
         either as a Numpy array or as a PyTorch tensor
         """
-        return np.array(self.states) if not as_torch else torch.tensor(self.states)
+        return (
+            np.array(self.states)
+            if not as_torch
+            else torch.tensor(self.states, device=self.device)
+        )
 
     def get_actions(self, as_torch=True):
         """
         Return the list of actions in the current trajectory
         either as a Numpy array or as a PyTorch tensor
         """
-        return np.array(self.actions) if not as_torch else torch.tensor(self.actions)
+        return (
+            np.array(self.actions)
+            if not as_torch
+            else torch.tensor(self.actions, device=self.device)
+        )
 
     def get_action_probs(self, as_torch=True):
         """
@@ -50,7 +61,7 @@ class Trajectory:
         return (
             np.array(self.action_probs)
             if not as_torch
-            else torch.tensor(self.action_probs)
+            else torch.tensor(self.action_probs, device=self.device)
         )
 
     def get_rewards(self, as_torch=True):
@@ -58,7 +69,11 @@ class Trajectory:
         Return the list of rewards in the current trajectory
         either as a Numpy array or as a PyTorch tensor
         """
-        return np.array(self.rewards) if not as_torch else torch.tensor(self.rewards)
+        return (
+            np.array(self.rewards)
+            if not as_torch
+            else torch.tensor(self.rewards, device=self.device)
+        )
 
     def get_next_states(self, as_torch=True):
         """
@@ -68,7 +83,7 @@ class Trajectory:
         return (
             np.array(self.next_states)
             if not as_torch
-            else torch.tensor(self.next_states)
+            else torch.tensor(self.next_states, device=self.device)
         )
 
     def get_returns(self, max_timestep=None, discount=1, to_go=False, as_torch=True):
@@ -86,7 +101,11 @@ class Trajectory:
             np.array(self.rewards)[::-1] * discount_per_timestep[::-1]
         )[::-1]
         returns = returns_per_timestep[0] if not to_go else returns_per_timestep
-        return returns if not as_torch else torch.tensor(returns.copy())
+        return (
+            returns
+            if not as_torch
+            else torch.tensor(returns.copy(), dtype=torch.float32, device=self.device)
+        )
 
     def __getitem__(self, t):
         """
@@ -120,6 +139,7 @@ class TrajectoryPool:
 
     def __init__(self, n=0):
         self.trajectories = [Trajectory() for _ in range(n)]
+        self.device = utils.get_torch_device()
 
     def add(self, trajectory):
         """
@@ -164,11 +184,11 @@ class TrajectoryPool:
             next_states.append(trajectory.get_next_states(as_torch=True))
 
         return (
-            torch.cat(states, dim=0).to(dtype=torch.float32),
-            torch.cat(actions, dim=0).to(dtype=torch.int64),
-            torch.cat(action_probs, dim=0).to(dtype=torch.float32),
-            torch.cat(returns, dim=0).to(dtype=torch.float32),
-            torch.cat(next_states, dim=0).to(dtype=torch.float32),
+            torch.cat(states, dim=0).to(dtype=torch.float32, device=self.device),
+            torch.cat(actions, dim=0).to(dtype=torch.int64, device=self.device),
+            torch.cat(action_probs, dim=0).to(dtype=torch.float32, device=self.device),
+            torch.cat(returns, dim=0).to(dtype=torch.float32, device=self.device),
+            torch.cat(next_states, dim=0).to(dtype=torch.float32, device=self.device),
         )
 
     def get_timesteps(self):
