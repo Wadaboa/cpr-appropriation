@@ -2,6 +2,7 @@ import os
 from datetime import datetime
 from collections import defaultdict
 
+import gym
 import numpy as np
 import torch
 import torch.optim as optim
@@ -19,11 +20,18 @@ class VPGPolicy:
 
     def __init__(self, env, policy_nn, baseline_nn=None, seed=42):
         assert isinstance(
+            env, gym.Env
+        ), "The given environment should be a Gym environment"
+        assert isinstance(
             policy_nn, nn.Module
         ), "The given policy network should be a PyTorch module"
         assert baseline_nn is None or isinstance(
             baseline_nn, nn.Module
         ), "The given baseline network should be None or a PyTorch module"
+
+        # Make the env a mult-agent one to have a single standard
+        if not utils.is_multi_agent_env(env):
+            env = utils.make_multi_agent(env)
 
         # Store parameters
         self.env = env
@@ -32,6 +40,12 @@ class VPGPolicy:
 
         # Fix random seed
         utils.set_seed(seed)
+
+        # Store useful env variables
+        self.n_agents = self.env.n_agents if hasattr(self.env, "n_agents") else 1
+        self.max_steps = self.env._max_episode_steps
+        self.action_space_size = self.env.action_space.n
+        self.observation_space_size = int(np.prod(self.env.observation_space.shape))
 
         # Define losses
         self.losses = dict()
@@ -44,8 +58,8 @@ class VPGPolicy:
     def train(
         self,
         epochs,
-        steps_per_epoch=4000,
-        policy_lr=3e-4,
+        steps_per_epoch,
+        policy_lr=1e-3,
         baseline_lr=1e-3,
         discount=0.99,
         save_every=None,
@@ -53,7 +67,8 @@ class VPGPolicy:
         enable_wandb=True,
         wandb_config=None,
         max_episodes=None,
-        std_advs=True,
+        std_returns=True,
+        episodes_mean_return=100,
     ):
         """
         Train VPG by running the specified number of episodes and
@@ -82,21 +97,32 @@ class VPGPolicy:
             wandb_run = utils.init_wandb(config=wandb_config)
 
         # Iterate for the specified number of epochs
-        metrics = defaultdict(int)
         current_episode = 0
+        mean_returns = []
         for epoch in range(epochs):
             logger.info(f"Epoch {epoch + 1} / {epochs}")
 
             # Accumulate trajectories to fill-up a batch of examples
             trajectories = memory.TrajectoryPool()
+            epoch_infos = defaultdict(list)
             while trajectories.get_timesteps() < steps_per_epoch:
                 logger.info(f"Episode {current_episode + 1}")
-                episode_trajectories = self.execute_episode()
-                social_outcome_metrics = self.env.get_social_outcome_metrics()
-                logger.info(f"Social outcome metrics: {social_outcome_metrics}")
-                for m in social_outcome_metrics:
-                    metrics[m] += social_outcome_metrics[m]
+                (
+                    episode_trajectories,
+                    episode_infos,
+                    episode_mean_return,
+                ) = self.execute_episode()
+                if len(episode_infos) > 0:
+                    logger.info(f"Episode infos: {episode_infos}")
+                    for k, v in episode_infos.items():
+                        epoch_infos[k] += [v]
                 trajectories.extend(episode_trajectories)
+                mean_returns += [episode_mean_return]
+                logger.info(f"Mean episode return: {episode_mean_return}")
+                logger.info(
+                    f"Last {episodes_mean_return} episodes mean return: "
+                    f"{np.mean(mean_returns[-episodes_mean_return:])}"
+                )
                 current_episode += 1
 
             # Get a batch of (s, a, r) tuples
@@ -116,6 +142,7 @@ class VPGPolicy:
             # Compute baseline
             values = torch.zeros_like(returns)
             if self.baseline_nn is not None:
+                self.baseline_nn.train(mode=True)
                 values = self.baseline_nn(states).squeeze()
 
             # Compute loss
@@ -125,17 +152,18 @@ class VPGPolicy:
                 values,
                 log_probs,
                 old_log_probs,
-                std_advs=std_advs,
+                std_returns=std_returns,
             )
             logger.info(f"Total loss: {total_loss}")
 
             # Compute mean epoch metrics
-            mean_metrics = {k: v / (epoch + 1) for k, v in metrics.items()}
-            logger.info(f"Mean metrics: {mean_metrics}")
+            if len(epoch_infos) > 0:
+                epoch_infos = {k: v / (epoch + 1) for k, v in epoch_infos.items()}
+                logger.info(f"Epoch infos: {epoch_infos}")
 
             # Log to wandb at end of epoch
             if enable_wandb:
-                wandb_run.log({**mean_metrics, "loss": total_loss}, step=epoch)
+                wandb_run.log({**epoch_infos, "loss": total_loss}, step=epoch)
 
             # Backprop
             optimizer.zero_grad()
@@ -158,13 +186,13 @@ class VPGPolicy:
         if enable_wandb:
             wandb_run.finish()
 
-    def compute_advantages(self, returns, values, log_probs, std_advs=True):
+    def compute_advantages(self, returns, values, log_probs, std_advs=False):
         """
         Compute advantages and possibly standardize them
         """
         advantages = returns - values
         if std_advs:
-            advantages = (advantages - advantages.mean()) / advantages.std()
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-6)
         return advantages.unsqueeze(-1).repeat(1, log_probs.shape[-1])
 
     def compute_loss(
@@ -174,12 +202,12 @@ class VPGPolicy:
         values,
         log_probs,
         old_log_probs=None,
-        std_advs=True,
+        std_returns=True,
     ):
         # Compute loss
-        advantages = self.compute_advantages(
-            returns, values, log_probs, std_advs=std_advs
-        )
+        if std_returns:
+            returns = (returns - returns.mean()) / (returns.std() + 1e-6)
+        advantages = self.compute_advantages(returns, values, log_probs)
         total_loss = self.losses["policy"](log_probs * advantages, actions)
         if self.baseline_nn is not None:
             total_loss += self.losses["baseline"](values, returns)
@@ -193,30 +221,36 @@ class VPGPolicy:
         """
         # Initialize trajectories and reset environment
         self.policy_nn.eval()
-        trajectories = memory.TrajectoryPool(n=self.env.n_agents)
+        trajectories = memory.TrajectoryPool(n=self.n_agents)
         observations = self.env.reset()
 
         # Iterate as long as agents are not done or until
         # we reach the maximum number of time-steps
-        for _ in range(self.env.max_steps):
+        all_infos = defaultdict(list)
+        for _ in range(self.max_steps):
             # Compute the best actions based on the current policy
             action_dict, action_probs = dict(), dict()
-            for agent_handle in range(self.env.n_agents):
+            for agent_handle in range(self.n_agents):
                 log_probs = self.policy_nn(
                     torch.tensor(observations[agent_handle], dtype=torch.float32)
                 )
                 action_probs[agent_handle] = log_probs.detach().numpy()
                 action = np.random.choice(
-                    np.arange(self.env.action_space_size()),
+                    np.arange(self.action_space_size),
                     p=np.exp(action_probs[agent_handle]),
                 )
                 action_dict[agent_handle] = action.item()
 
             # Perform a step in the environment
-            new_observations, rewards, dones, _ = self.env.step(action_dict)
+            new_observations, rewards, dones, infos = self.env.step(action_dict)
+
+            # Sum all agents' metrics
+            if "__all__" in infos:
+                for k, v in infos["__all__"].items():
+                    all_infos[k] += [v]
 
             # Update each agent's trajectory
-            for agent_handle in range(self.env.n_agents):
+            for agent_handle in range(self.n_agents):
                 trajectories.add_to_trajectory(
                     agent_handle,
                     observations[agent_handle],
@@ -229,11 +263,20 @@ class VPGPolicy:
             # Update observations and possibly stop
             # if all agents are done
             observations = new_observations
-            if dones["__all__"]:
+            if "__all__" in dones and dones["__all__"]:
                 logger.debug(f"Early stopping, all agents done")
                 break
 
-        return trajectories
+        # Compute a mean of episode infos
+        if "__all__" in infos:
+            all_infos = {k: np.mean(v) for k, v in all_infos.items()}
+
+        # Compute mean episode return
+        mean_return = np.mean(
+            [t.get_returns(discount=1, to_go=False) for t in trajectories]
+        )
+
+        return trajectories, all_infos, mean_return
 
     def save(self, path):
         """
@@ -274,7 +317,7 @@ class TRPOPolicy(VPGPolicy):
         baseline_nn,
         seed=42,
         beta=1.0,
-        kl_target=0.01,
+        kl_target=None,
     ):
         assert isinstance(
             beta, float
@@ -288,12 +331,12 @@ class TRPOPolicy(VPGPolicy):
         self.losses["constraint"] = nn.KLDivLoss(log_target=True, reduction="batchmean")
 
     def compute_loss(
-        self, returns, actions, values, log_probs, old_log_probs=None, std_advs=True
+        self, returns, actions, values, log_probs, old_log_probs=None, std_returns=True
     ):
         # Compute advantages
-        advantages = self.compute_advantages(
-            returns, values, log_probs, std_advs=std_advs
-        )
+        if std_returns:
+            returns = (returns - returns.mean()) / (returns.std() + 1e-6)
+        advantages = self.compute_advantages(returns, values, log_probs)
 
         # Compute the probability ratio
         probs_ratio = torch.exp(log_probs - old_log_probs)
@@ -305,7 +348,7 @@ class TRPOPolicy(VPGPolicy):
 
         # Use KL divergence as regularizer and possibily update beta
         kl_div = self.losses["constraint"](old_log_probs, log_probs)
-        total_loss -= self.beta * kl_div
+        total_loss += self.beta * kl_div
         if self.kl_target is not None:
             if kl_div < (self.kl_target / 1.5):
                 self.beta /= 2
@@ -327,7 +370,7 @@ class PPOPolicy(VPGPolicy):
         baseline_nn,
         seed=42,
         c1=1.0,
-        c2=0.0,
+        c2=0.01,
         eps=0.2,
     ):
         assert isinstance(c1, float) and isinstance(
@@ -345,12 +388,12 @@ class PPOPolicy(VPGPolicy):
         values,
         log_probs,
         old_log_probs=None,
-        std_advs=True,
+        std_returns=True,
     ):
         # Compute advantages
-        advantages = self.compute_advantages(
-            returns, values, log_probs, std_advs=std_advs
-        )
+        if std_returns:
+            returns = (returns - returns.mean()) / (returns.std() + 1e-6)
+        advantages = self.compute_advantages(returns, values, log_probs)
 
         # Compute the probability ratio
         probs_ratio = torch.exp(log_probs - old_log_probs)
@@ -364,7 +407,7 @@ class PPOPolicy(VPGPolicy):
         # Compute total loss as the sum of PPO loss, baseline loss and
         # entropy of the categorical action distribution
         total_loss = self.losses["policy"](objective, actions)
-        total_loss -= self.c1 * self.losses["baseline"](values, returns)
+        total_loss += self.c1 * self.losses["baseline"](values, returns)
         total_loss += self.c2 * Categorical(probs=torch.exp(log_probs)).entropy().mean()
 
         return total_loss

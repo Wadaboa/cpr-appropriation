@@ -78,7 +78,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         self.beam_squares_front = beam_squares_front
         self.beam_squares_side = beam_squares_width // 2
         self.ball_radius = ball_radius
-        self.max_steps = max_steps
+        self._max_episode_steps = max_steps
         self.initial_resource_probability = initial_resource_probability
         self.gifting_mechanism = (
             utils.GiftingMechanism(gifting_mechanism)
@@ -300,10 +300,16 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             infos[agent_handle]["gifting"] = agent_handle in gifting_agents
             infos[agent_handle]["gifted"] = agent_handle in gifted_agents
 
+        # Add social outcome metrics to info dict
+        infos["__all__"] = self.get_social_outcome_metrics()
+
         # Check if we reached end of episode
         dones["__all__"] = False
         self.elapsed_steps += 1
-        if self._is_resource_depleted() or self.elapsed_steps == self.max_steps:
+        if (
+            self._is_resource_depleted()
+            or self.elapsed_steps == self._max_episode_steps
+        ):
             dones = {h: True for h in range(self.n_agents)}
             dones["__all__"] = True
 
@@ -624,7 +630,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         for agent_handle in range(self.n_agents):
             rewards = self.rewards_history[agent_handle]
             ti = np.argwhere(np.array(rewards) > 0)
-            times.append(self.max_steps if len(ti) == 0 else np.mean(ti))
+            times.append(self._max_episode_steps if len(ti) == 0 else np.mean(ti))
         return np.mean(times)
 
     def peace_metric(self):

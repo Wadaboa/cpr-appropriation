@@ -29,7 +29,7 @@ The environment can be customized with the following parameters, to be given as 
 - `gifting_fixed_budget_size`: size of the budget in case the gifting mechanism is "fixed budget" (defaults to 40)
 
 ### Social outcome metrics
-The environment exposes the `get_social_outcome_metrics` function, that returns a dictionary filled with Efficiency (U), Equality (E), Sustainability (S) and Peace (P) metrics for the current episode, as described in the original paper.
+The environment exposes the `get_social_outcome_metrics` function, that returns a dictionary filled with Efficiency (U), Equality (E), Sustainability (S) and Peace (P) metrics for the current episode, as described in the original paper. Moreover, the `info` dictionary supplied by the `env.step` function contains an additional `__all__` key that is filled with the social outcome metrics, computed up to the current timestep.
 
 ### Observations
 Observations are always computed as an RGB image in which the current agent is colored in blue, opponents are colored in red, resources in green and empty cells in black. In case you want to have a look at agents' observations, you can plot them using the following logic:
@@ -50,7 +50,7 @@ In order to install all the dependecies required by the project, you have to `cd
 python3 -m venv venv
 source venv/bin/activate
 pip install src/gym_cpr_grid
-pip install -r requirements.txt
+pip install -r init/requirements.txt
 ```
 
 ## Execution
@@ -66,7 +66,7 @@ env = gym.make(
 )
 ```
 
-If you want to see a working example, please check out the [cpr.ipynb](cpr.ipynb) Jupyter notebook, that contains an explanation of the methods in use, along with a comparison of all the implemented solutions. You can also head over to the public [W&B project](https://wandb.ai/wadaboa/cpr-appropriation) containing plots for performed experiments.
+If you want to see a working example, please check out the Jupyter notebooks in the `notebooks/` folder, that contain an explanation of the methods in use, along with a comparison of all the implemented solutions. You can also head over to the public [W&B project](https://wandb.ai/wadaboa/cpr-appropriation) containing plots for performed experiments.
 
 If you want to use the CPR environment with RLlib, have a look at the [rllib.py](rllib.py) Python module, which contains a FC network compatible with RLlib's API, a class with callbacks for social outcome metrics and the DQN baseline described in the original paper.
 
