@@ -55,9 +55,10 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         beam_squares_width=5,
         ball_radius=2,
         max_steps=1000,
-        initial_resource_probability=0.05,
+        initial_resource_probability=0.2,
         gifting_mechanism=None,
         gifting_fixed_budget_size=40,
+        add_social_outcome_metrics=True,
     ):
         assert (
             grid_width % 2 != 0 and grid_height % 2 != 0
@@ -87,6 +88,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             else gifting_mechanism
         )
         self.gifting_fixed_budget_size = gifting_fixed_budget_size
+        self.add_social_outcome_metrics = add_social_outcome_metrics
 
         # Gym requirements
         self.action_space = utils.CPRGridActionSpace()
@@ -105,13 +107,14 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         (
             self.elapsed_steps,
             self.agent_positions,
+            self._initial_grid,
             self.grid,
             self.tagged_agents,
             self.tagging_history,
             self.rewards_history,
             self.collected_resources,
             self.gifting_budget,
-        ) = (None, None, None, None, None, None, None, None)
+        ) = (None, None, None, None, None, None, None, None, None)
 
     def observation_space_size(self, flattened=True):
         """
@@ -144,7 +147,8 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         # Reset variables
         self.elapsed_steps = 0
         self.agent_positions = [self._random_position() for _ in range(self.n_agents)]
-        self.grid = self._get_initial_grid()
+        self._initial_grid = self._get_initial_grid()
+        self.grid = self._initial_grid.copy()
         self.tagged_agents = dict()
         self.tagging_history = [dict(self.tagged_agents)]
         self.collected_resources = {h: 0 for h in range(self.n_agents)}
@@ -316,7 +320,8 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             self.rewards_history[agent_handle].append(rewards[agent_handle])
 
         # Add social outcome metrics to info dict
-        infos["__all__"] = self.get_social_outcome_metrics()
+        if self.add_social_outcome_metrics:
+            infos["__all__"] = self.get_social_outcome_metrics()
 
         # Respawn resources
         self._respawn_resources()
@@ -450,7 +455,10 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         in a ball centered around each currently empty location
         """
         for x, y in itertools.product(range(self.grid_width), range(self.grid_height)):
-            if self.grid[y, x] == utils.GridCell.EMPTY.value:
+            if (
+                self.grid[y, x] == utils.GridCell.EMPTY.value
+                and self._initial_grid[y, x] == utils.GridCell.RESOURCE.value
+            ):
                 ball = self._extract_ball(x, y)
                 l = len(ball[ball == utils.GridCell.RESOURCE.value])
                 p = self._respawn_probability(l)

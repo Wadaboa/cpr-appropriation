@@ -430,3 +430,6 @@ checkpoints/
 
 # Tex
 __latexindent_temp.*
+
+# Other
+CommonsGame/

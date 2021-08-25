@@ -51,7 +51,8 @@ def is_multi_agent_env(env):
     and checking if the returned observations are in a dictionary or not
     """
     assert isinstance(env, gym.Env), "The given environment should be a Gym environment"
-    return isinstance(env.reset(), dict)
+    obs = env.reset()
+    return isinstance(obs, dict) or isinstance(obs, list)
 
 
 def make_multi_agent(env, max_steps=1000):

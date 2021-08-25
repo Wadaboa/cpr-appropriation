@@ -136,6 +136,7 @@ def dqn_baseline(
             "max_steps": max_steps,
             "tagging_ability": tagging_ability,
             "gifting_mechanism": gifting_mechanism,
+            "add_social_outcome_metrics": False,
         },
         "horizon": max_steps,
         "num_workers": num_workers,
@@ -161,6 +162,7 @@ def dqn_baseline(
                 "sync_tensorboard": True,
             }
         },
+        "num_gpus": 1 if torch.cuda.is_available() else 0,
     }
     return tune.run(
         DQNTrainer,

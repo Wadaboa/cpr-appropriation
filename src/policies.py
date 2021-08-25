@@ -7,8 +7,10 @@ import numpy as np
 import torch
 import torch.optim as optim
 import torch.nn as nn
+import matplotlib.pyplot as plt
 from torch.distributions import Categorical
 from loguru import logger
+from IPython import display
 
 from . import memory, utils
 
@@ -69,6 +71,7 @@ class VPGPolicy:
         max_episodes=None,
         std_returns=True,
         episodes_mean_return=100,
+        render_every=None,
     ):
         """
         Train VPG by running the specified number of episodes and
@@ -112,7 +115,11 @@ class VPGPolicy:
                     episode_trajectories,
                     episode_infos,
                     episode_mean_return,
-                ) = self.execute_episode()
+                ) = self.execute_episode(
+                    render=(
+                        render_every is not None and current_episode % render_every == 0
+                    )
+                )
                 if len(episode_infos) > 0:
                     logger.info(f"Episode infos: {episode_infos}")
                     for k, v in episode_infos.items():
@@ -222,7 +229,7 @@ class VPGPolicy:
             total_loss += self.losses["baseline"](values, returns)
         return total_loss
 
-    def execute_episode(self):
+    def execute_episode(self, render=False):
         """
         Run an episode for the maximum number of time-steps defined
         in the environment and return a list of trajectories,
@@ -233,9 +240,17 @@ class VPGPolicy:
         trajectories = memory.TrajectoryPool(n=self.n_agents)
         observations = self.env.reset()
 
+        # Initialize plot
+        if render:
+            fig, ax, img = self.env.plot(self.env.render("rgb_array"))
+
         # Iterate as long as agents are not done or until
         # we reach the maximum number of time-steps
         for _ in range(self.max_steps):
+            # Plot previous observations
+            if render:
+                display.display(plt.gcf())
+
             # Compute the best actions based on the current policy
             action_dict, action_probs = dict(), dict()
             for agent_handle in range(self.n_agents):
@@ -255,6 +270,11 @@ class VPGPolicy:
 
             # Perform a step in the environment
             new_observations, rewards, dones, infos = self.env.step(action_dict)
+
+            # Update rendering
+            if render:
+                display.clear_output(wait=True)
+                img.set_data(self.env.render(mode="rgb_array"))
 
             # Update each agent's trajectory
             for agent_handle in range(self.n_agents):
