@@ -137,9 +137,13 @@ class TrajectoryPool:
     A trajectory pool is a set of trajectories
     """
 
-    def __init__(self, n=0):
+    def __init__(self, discount=1, minibatch_size=None, n=0):
         self.trajectories = [Trajectory() for _ in range(n)]
+        self.discount = discount
         self.device = utils.get_torch_device()
+        self.minibatch_size = minibatch_size
+        self._current_minibatch = None
+        self._full_batch = None
 
     def add(self, trajectory):
         """
@@ -157,8 +161,8 @@ class TrajectoryPool:
         assert isinstance(
             trajectory_pool, TrajectoryPool
         ), "The given trajectory pool should be an instance of the TrajectoryPool class"
-        for trajectory in trajectory_pool:
-            self.add(trajectory)
+        for i in range(trajectory_pool.num_trajectories()):
+            self.add(trajectory_pool.get_trajectory(i))
 
     def add_to_trajectory(self, i, state, action, action_probs, reward, next_state):
         """
@@ -168,7 +172,7 @@ class TrajectoryPool:
             state, action, action_probs, reward, next_state
         )
 
-    def tensorify(self, discount=1):
+    def tensorify(self):
         """
         Convert the current pool of trajectories to
         a set of PyTorch tensors
@@ -179,7 +183,9 @@ class TrajectoryPool:
             actions.append(trajectory.get_actions(as_torch=True))
             action_probs.append(trajectory.get_action_probs(as_torch=True))
             returns.append(
-                trajectory.get_returns(discount=discount, to_go=True, as_torch=True)
+                trajectory.get_returns(
+                    discount=self.discount, to_go=True, as_torch=True
+                )
             )
             next_states.append(trajectory.get_next_states(as_torch=True))
 
@@ -191,23 +197,65 @@ class TrajectoryPool:
             torch.cat(next_states, dim=0).to(dtype=torch.float32, device=self.device),
         )
 
-    def get_timesteps(self):
+    def num_trajectories(self):
         """
-        Compute how many time steps there are in the pool
+        Return the number of trajectories in the pool
         """
-        return sum(len(t) for t in self.trajectories)
+        return len(self.trajectories)
 
-    def __getitem__(self, i):
+    def get_trajectory(self, i):
         """
         Return the i-th trajectory in the pool
         """
         return self.trajectories[i]
 
+    def get_trajectory_returns(
+        self, max_timestep=None, discount=1, to_go=False, as_torch=True
+    ):
+        """
+        Return a list of returns for each trajectory in the pool
+        """
+        return [
+            self.get_trajectory(t).get_returns(
+                max_timestep=max_timestep,
+                discount=discount,
+                to_go=to_go,
+                as_torch=as_torch,
+            )
+            for t in range(self.num_trajectories())
+        ]
+
+    def __iter__(self):
+        """
+        Initialize the iterator object
+        """
+        assert (
+            self.minibatch_size is not None
+        ), "To get an iterator, you have to set the mini-batch size parameter"
+        self._current_minibatch = 0
+        self._full_batch = self.tensorify()
+        indices = torch.randperm(len(self))
+        self._full_batch = tuple(x[indices] for x in self._full_batch)
+        return self
+
+    def __next__(self):
+        """
+        Return the next mini-batch
+        """
+        timesteps = len(self)
+        if self._current_minibatch >= timesteps // self.minibatch_size:
+            raise StopIteration
+
+        start = self._current_minibatch * self.minibatch_size
+        end = start + self.minibatch_size
+        self._current_minibatch += 1
+        return tuple(x[start:end] for x in self._full_batch)
+
     def __len__(self):
         """
-        Return how many trajectories we have in the pool
+        Compute how many time steps there are in the pool
         """
-        return len(self.trajectories)
+        return sum(len(t) for t in self.trajectories)
 
     def __repr__(self):
         return f"TrajectoryPool(timesteps={self.get_timesteps()})"

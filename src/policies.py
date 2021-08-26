@@ -55,12 +55,13 @@ class VPGPolicy:
             ignore_index=utils.IGNORE_INDEX, reduction="mean"
         )
         if self.baseline_nn is not None:
-            self.losses["baseline"] = nn.MSELoss(reduction="mean")
+            self.losses["baseline"] = nn.HuberLoss(reduction="mean")
 
     def train(
         self,
         epochs,
         steps_per_epoch,
+        minibatch_size,
         policy_lr=1e-3,
         baseline_lr=1e-3,
         discount=0.99,
@@ -70,100 +71,94 @@ class VPGPolicy:
         wandb_config=None,
         max_episodes=None,
         std_returns=True,
+        std_advs=False,
         episodes_mean_return=100,
         render_every=None,
+        clip_gradient_norm=0.5,
     ):
         """
         Train VPG by running the specified number of episodes and
         maximum time steps
         """
+        assert (
+            steps_per_epoch % minibatch_size == 0
+        ), "The number of steps per epoch should be a multiple of the mini-batch size"
+
         # Define optimizer with different learning rates for
         # policy and value networks
-        params = [{"params": list(self.policy_nn.parameters())}]
+        params = [{"params": list(self.policy_nn.parameters()), "lr": policy_lr}]
         if self.baseline_nn is not None:
             params += [
                 {"params": list(self.baseline_nn.parameters()), "lr": baseline_lr}
             ]
-        optimizer = optim.Adam(params, lr=policy_lr)
+        optimizer = optim.Adam(params)
 
         # Initialize wandb for logging
         if enable_wandb:
             wandb_config = {
                 **wandb_config,
                 "epochs": epochs,
+                "steps_per_epoch": steps_per_epoch,
+                "minibatch_size": minibatch_size,
                 "policy_lr": policy_lr,
                 "baseline_lr": baseline_lr,
                 "discount": discount,
-                "steps_per_epoch": steps_per_epoch,
                 "baseline": self.baseline_nn is not None,
+                "std_returns": std_returns,
+                "std_advs": std_advs,
+                "clip_gradient_norm": clip_gradient_norm,
             }
             wandb_run = utils.init_wandb(config=wandb_config)
 
         # Iterate for the specified number of epochs
         current_episode = 0
-        mean_returns = []
         for epoch in range(epochs):
             logger.info(f"Epoch {epoch + 1} / {epochs}")
 
             # Accumulate trajectories to fill-up a batch of examples
-            trajectories = memory.TrajectoryPool()
-            epoch_infos = defaultdict(list)
-            epoch_episodes = 0
-            while trajectories.get_timesteps() < steps_per_epoch:
-                logger.info(f"Episode {current_episode + 1}")
-                (
-                    episode_trajectories,
-                    episode_infos,
-                    episode_mean_return,
-                ) = self.execute_episode(
-                    render=(
-                        render_every is not None and current_episode % render_every == 0
-                    )
-                )
-                if len(episode_infos) > 0:
-                    logger.info(f"Episode infos: {episode_infos}")
-                    for k, v in episode_infos.items():
-                        epoch_infos[k] += [v]
-                trajectories.extend(episode_trajectories)
-                mean_returns += [episode_mean_return]
-                logger.info(f"Mean episode return: {episode_mean_return}")
-                logger.info(
-                    f"Last {episodes_mean_return} episodes mean return: "
-                    f"{np.mean(mean_returns[-episodes_mean_return:])}"
-                )
-                current_episode += 1
-                epoch_episodes += 1
+            (
+                trajectories,
+                current_episode,
+                epoch_infos,
+                epoch_returns,
+            ) = self.collect_trajectories(
+                current_episode,
+                steps_per_epoch,
+                minibatch_size,
+                discount=discount,
+                episodes_mean_return=episodes_mean_return,
+                render_every=render_every,
+            )
 
-            # Get a batch of (s, a, r) tuples
-            actual_batch_size = trajectories.get_timesteps()
+            # Check if the trajectories collected are more than
+            # the selected ones
+            actual_batch_size = len(trajectories)
             if actual_batch_size > steps_per_epoch:
                 logger.warning(
                     f"The actual batch size is {actual_batch_size}, instead of {steps_per_epoch}"
                 )
-            states, actions, old_log_probs, returns, _ = trajectories.tensorify(
-                discount=discount
-            )
 
-            # Compute log-probabilities of actions
+            # Set networks to training mode
             self.policy_nn.train(mode=True)
-            log_probs = self.policy_nn(states)
-
-            # Compute baseline
-            values = torch.zeros_like(returns, device=utils.get_torch_device())
             if self.baseline_nn is not None:
                 self.baseline_nn.train(mode=True)
-                values = self.baseline_nn(states).squeeze()
 
-            # Compute loss
-            total_loss = self.compute_loss(
-                returns,
-                actions,
-                values,
-                log_probs,
-                old_log_probs,
-                std_returns=std_returns,
-            )
-            logger.info(f"Total loss: {total_loss}")
+            # Perform mini-batch updates
+            epoch_loss = 0.0
+            num_minibatches = actual_batch_size // minibatch_size
+            for minibatch, (states, actions, old_log_probs, returns, _) in enumerate(
+                trajectories
+            ):
+                logger.info(f"Mini-batch {minibatch + 1} / {num_minibatches}")
+                epoch_loss += self.minibatch_update(
+                    optimizer,
+                    states,
+                    actions,
+                    old_log_probs,
+                    returns,
+                    std_returns=std_returns,
+                    clip_gradient_norm=clip_gradient_norm,
+                )
 
             # Compute mean epoch metrics
             if len(epoch_infos) > 0:
@@ -175,16 +170,11 @@ class VPGPolicy:
                 wandb_run.log(
                     {
                         **epoch_infos,
-                        "loss": total_loss,
-                        "mean_return": np.mean(mean_returns[-epoch_episodes:]),
+                        "loss": epoch_loss,
+                        "mean_return": np.mean(epoch_returns),
                     },
                     step=epoch,
                 )
-
-            # Backprop
-            optimizer.zero_grad()
-            total_loss.backward()
-            optimizer.step()
 
             # Save model checkpoints
             if save_every is not None and epoch % save_every == 0:
@@ -201,6 +191,115 @@ class VPGPolicy:
         # Stop wandb logging
         if enable_wandb:
             wandb_run.finish()
+
+    def collect_trajectories(
+        self,
+        current_episode,
+        steps_per_epoch,
+        minibatch_size,
+        discount=0.99,
+        episodes_mean_return=100,
+        render_every=None,
+    ):
+        """
+        Collect a buffer of timesteps of size at least `steps_per_epoch`
+        """
+        trajectories = memory.TrajectoryPool(
+            discount=discount, minibatch_size=minibatch_size
+        )
+        epoch_infos = defaultdict(list)
+        epoch_returns = []
+        while len(trajectories) < steps_per_epoch:
+            logger.info(f"Episode {current_episode + 1}")
+            (
+                episode_trajectories,
+                episode_infos,
+                episode_mean_return,
+            ) = self.execute_episode(
+                render=(
+                    render_every is not None and current_episode % render_every == 0
+                )
+            )
+            if len(episode_infos) > 0:
+                logger.info(f"Episode infos: {episode_infos}")
+                for k, v in episode_infos.items():
+                    epoch_infos[k] += [v]
+            trajectories.extend(episode_trajectories)
+            epoch_returns += [episode_mean_return]
+            logger.info(f"Mean episode return: {episode_mean_return}")
+            logger.info(
+                f"Last {episodes_mean_return} episodes mean return: "
+                f"{np.mean(epoch_returns[-episodes_mean_return:])}"
+            )
+            current_episode += 1
+
+        return trajectories, current_episode, epoch_infos, epoch_returns
+
+    def minibatch_update(
+        self,
+        optimizer,
+        states,
+        actions,
+        old_log_probs,
+        returns,
+        std_returns=True,
+        std_advs=False,
+        clip_gradient_norm=0.5,
+    ):
+        """
+        Perform a mini-batch step and update network parameters
+        """
+        # Compute log-probabilities of actions
+        log_probs = self.policy_nn(states)
+
+        # Compute baseline
+        values = torch.zeros_like(returns, device=utils.get_torch_device())
+        if self.baseline_nn is not None:
+            values = self.baseline_nn(states).squeeze()
+
+        # Compute loss
+        total_loss = self.compute_loss(
+            returns,
+            actions,
+            values,
+            log_probs,
+            old_log_probs,
+            std_returns=std_returns,
+            std_advs=std_advs,
+        )
+        logger.info(f"Total loss: {total_loss}")
+
+        # Compute gradients
+        optimizer.zero_grad()
+        total_loss.backward()
+
+        # Log gradient norms
+        logger.info(
+            f"Policy network L2 gradient norm: {self.policy_nn.get_gradient_norm()}"
+        )
+        if self.baseline_nn is not None:
+            logger.info(
+                f"Baseline network L2 gradient norm: {self.baseline_nn.get_gradient_norm()}"
+            )
+
+        # Clip gradient norms
+        if clip_gradient_norm is not None:
+            nn.utils.clip_grad_norm_(self.policy_nn.parameters(), clip_gradient_norm)
+            logger.info(
+                f"Policy network L2 gradient norm after clipping: {self.policy_nn.get_gradient_norm()}"
+            )
+            if self.baseline_nn is not None:
+                nn.utils.clip_grad_norm_(
+                    self.baseline_nn.parameters(), clip_gradient_norm
+                )
+                logger.info(
+                    f"Baseline network L2 gradient norm after clipping: {self.baseline_nn.get_gradient_norm()}"
+                )
+
+        # Update parameters
+        optimizer.step()
+
+        return total_loss
 
     def compute_advantages(self, returns, values, log_probs, std_advs=False):
         """
@@ -219,11 +318,16 @@ class VPGPolicy:
         log_probs,
         old_log_probs=None,
         std_returns=True,
+        std_advs=False,
     ):
-        # Compute loss
+        """
+        Compute VPG loss function
+        """
         if std_returns:
             returns = (returns - returns.mean()) / (returns.std() + 1e-6)
-        advantages = self.compute_advantages(returns, values, log_probs)
+        advantages = self.compute_advantages(
+            returns, values, log_probs, std_advs=std_advs
+        )
         total_loss = self.losses["policy"](log_probs * advantages, actions)
         if self.baseline_nn is not None:
             total_loss += self.losses["baseline"](values, returns)
@@ -242,7 +346,7 @@ class VPGPolicy:
 
         # Initialize plot
         if render:
-            fig, ax, img = self.env.plot(self.env.render("rgb_array"))
+            _, _, img = self.env.plot(self.env.render("rgb_array"))
 
         # Iterate as long as agents are not done or until
         # we reach the maximum number of time-steps
@@ -298,9 +402,9 @@ class VPGPolicy:
         all_infos = infos["__all__"] if "__all__" in infos else dict()
 
         # Compute mean episode return
-        agents_returns = [
-            t.get_returns(discount=1, to_go=False, as_torch=False) for t in trajectories
-        ]
+        agents_returns = trajectories.get_trajectory_returns(
+            discount=1, to_go=False, as_torch=False
+        )
         mean_return = np.mean(agents_returns)
 
         return trajectories, all_infos, mean_return
@@ -358,12 +462,24 @@ class TRPOPolicy(VPGPolicy):
         self.losses["constraint"] = nn.KLDivLoss(log_target=True, reduction="batchmean")
 
     def compute_loss(
-        self, returns, actions, values, log_probs, old_log_probs=None, std_returns=True
+        self,
+        returns,
+        actions,
+        values,
+        log_probs,
+        old_log_probs=None,
+        std_returns=True,
+        std_advs=False,
     ):
+        """
+        Compute TRPO loss function
+        """
         # Compute advantages
         if std_returns:
             returns = (returns - returns.mean()) / (returns.std() + 1e-6)
-        advantages = self.compute_advantages(returns, values, log_probs)
+        advantages = self.compute_advantages(
+            returns, values, log_probs, std_advs=std_advs
+        )
 
         # Compute the probability ratio
         probs_ratio = torch.exp(log_probs - old_log_probs)
@@ -416,11 +532,17 @@ class PPOPolicy(VPGPolicy):
         log_probs,
         old_log_probs=None,
         std_returns=True,
+        std_advs=False,
     ):
+        """
+        Compute PPO loss function
+        """
         # Compute advantages
         if std_returns:
             returns = (returns - returns.mean()) / (returns.std() + 1e-6)
-        advantages = self.compute_advantages(returns, values, log_probs)
+        advantages = self.compute_advantages(
+            returns, values, log_probs, std_advs=std_advs
+        )
 
         # Compute the probability ratio
         probs_ratio = torch.exp(log_probs - old_log_probs)

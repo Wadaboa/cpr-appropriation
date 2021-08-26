@@ -15,7 +15,7 @@ class MLP(nn.Module):
         input_size,
         hidden_dims,
         output_size,
-        non_linearity=nn.ReLU,
+        non_linearity=nn.Tanh,
         log_softmax=True,
     ):
         assert isinstance(
@@ -50,3 +50,27 @@ class MLP(nn.Module):
         start_dim = 0 if not self.training else 1
         x = self.mlp(torch.flatten(x, start_dim=start_dim))
         return self.out(x)
+
+    def get_gradient_norm(self, norm_type=2.0):
+        """
+        Compute the norm of the gradient w.r.t. the network parameters,
+        after calling loss.backward
+
+        https://pytorch.org/docs/stable/_modules/torch/nn/utils/clip_grad.html#clip_grad_norm_
+        """
+        norm = 0.0
+        parameters = [
+            p for p in self.parameters() if p.grad is not None and p.requires_grad
+        ]
+        if len(parameters) > 0:
+            device = parameters[0].grad.device
+            norm = torch.norm(
+                torch.stack(
+                    [
+                        torch.norm(p.grad.detach(), norm_type).to(device)
+                        for p in parameters
+                    ]
+                ),
+                norm_type,
+            ).item()
+        return norm
