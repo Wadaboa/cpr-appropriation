@@ -8,6 +8,7 @@ from ray import tune
 from ray.tune import JupyterNotebookReporter, CLIReporter
 from ray.rllib.models import ModelCatalog
 from ray.rllib.agents.dqn import DQNTrainer
+from ray.rllib.agents.pg import PGTrainer
 from ray.tune.logger import DEFAULT_LOGGERS
 from ray.tune.integration.wandb import WandbLogger
 
@@ -95,7 +96,8 @@ class FCNetwork(TorchModelV2, nn.Module):
         return torch.reshape(self.torch_sub_model.value_function(), [-1])
 
 
-def dqn_baseline(
+def rllib_baseline(
+    algorithm,
     n_agents,
     grid_width,
     grid_height,
@@ -112,7 +114,9 @@ def dqn_baseline(
 ):
     """
     Run the DQN model described in the paper using RLlib's implementation
+    or RLlib's vanilla PG algorithm
     """
+    assert algorithm in ("vpg", "dqn")
     ModelCatalog.register_custom_model("fcn", FCNetwork)
     metric_columns = {
         "episodes_total": "episodes",
@@ -147,12 +151,6 @@ def dqn_baseline(
             "fcnet_hiddens": [32, 32],
             "fcnet_activation": "relu",
         },
-        "exploration_config": {
-            "type": "EpsilonGreedy",
-            "initial_epsilon": 1.0,
-            "final_epsilon": 0.1,
-            "epsilon_timesteps": max_steps,
-        },
         "callbacks": SocialOutcomeMetricsCallbacks,
         "logger_config": {
             "wandb": {
@@ -164,8 +162,18 @@ def dqn_baseline(
         },
         "num_gpus": 1 if torch.cuda.is_available() else 0,
     }
+    if algorithm == "dqn":
+        config = {
+            **config,
+            "exploration_config": {
+                "type": "EpsilonGreedy",
+                "initial_epsilon": 1.0,
+                "final_epsilon": 0.1,
+                "epsilon_timesteps": max_steps,
+            },
+        }
     return tune.run(
-        DQNTrainer,
+        DQNTrainer if algorithm == "dqn" else PGTrainer,
         config=config,
         progress_reporter=reporter,
         loggers=DEFAULT_LOGGERS + (WandbLogger,),
