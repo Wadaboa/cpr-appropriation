@@ -258,7 +258,7 @@ class TrajectoryPool:
         return sum(len(t) for t in self.trajectories)
 
     def __repr__(self):
-        return f"TrajectoryPool(timesteps={self.get_timesteps()})"
+        return f"TrajectoryPool(timesteps={len(self)})"
 
     def __str__(self):
         return self.__repr__()

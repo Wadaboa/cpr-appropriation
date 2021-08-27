@@ -1,7 +1,19 @@
 import torch
 import torch.nn as nn
+import numpy as np
+from loguru import logger
 
 from . import utils
+
+
+def init_weights(layer, std=np.sqrt(2), bias_const=0.0):
+    """
+    Initialize layer with orthogonal matrices
+    """
+    if isinstance(layer, nn.Linear):
+        nn.init.orthogonal_(layer.weight, std)
+        nn.init.constant_(layer.bias, bias_const)
+    return layer
 
 
 class MLP(nn.Module):
@@ -15,7 +27,7 @@ class MLP(nn.Module):
         input_size,
         hidden_dims,
         output_size,
-        non_linearity=nn.Tanh,
+        non_linearity=nn.LeakyReLU,
         log_softmax=True,
     ):
         assert isinstance(
@@ -30,7 +42,7 @@ class MLP(nn.Module):
         super(MLP, self).__init__()
 
         # Define architecture
-        hidden_dims += [output_size]
+        hidden_dims = [*hidden_dims, output_size]
         linear_layers = [nn.Linear(input_size, hidden_dims[0]), non_linearity()]
         for h in range(1, len(hidden_dims)):
             linear_layers += [
@@ -39,6 +51,12 @@ class MLP(nn.Module):
             ]
         self.mlp = nn.Sequential(*linear_layers)
         self.out = nn.LogSoftmax(dim=-1) if log_softmax else nn.Identity()
+
+        # Print model summary
+        logger.debug(f"Model summary: {self}")
+
+        # Orthogonal initialization
+        self.apply(init_weights)
 
         # Transfer to device
         self.to(utils.get_torch_device())

@@ -20,7 +20,7 @@ class VPGPolicy:
     Vanilla Policy Gradient implementation
     """
 
-    def __init__(self, env, policy_nn, baseline_nn=None, seed=42):
+    def __init__(self, env, policy_nn, baseline_nn=None, alpha=0.5, seed=42):
         assert isinstance(
             env, gym.Env
         ), "The given environment should be a Gym environment"
@@ -30,6 +30,9 @@ class VPGPolicy:
         assert baseline_nn is None or isinstance(
             baseline_nn, nn.Module
         ), "The given baseline network should be None or a PyTorch module"
+        assert isinstance(
+            alpha, float
+        ), "The alpha hyperparameter should be given as float"
 
         # Make the env a mult-agent one to have a single standard
         if not utils.is_multi_agent_env(env):
@@ -39,6 +42,7 @@ class VPGPolicy:
         self.env = env
         self.policy_nn = policy_nn
         self.baseline_nn = baseline_nn
+        self.alpha = alpha
 
         # Fix random seed
         utils.set_seed(seed)
@@ -55,7 +59,7 @@ class VPGPolicy:
             ignore_index=utils.IGNORE_INDEX, reduction="mean"
         )
         if self.baseline_nn is not None:
-            self.losses["baseline"] = nn.HuberLoss(reduction="mean")
+            self.losses["baseline"] = nn.MSELoss(reduction="mean")
 
     def train(
         self,
@@ -83,6 +87,9 @@ class VPGPolicy:
         assert (
             steps_per_epoch % minibatch_size == 0
         ), "The number of steps per epoch should be a multiple of the mini-batch size"
+        assert clip_gradient_norm is None or isinstance(
+            clip_gradient_norm, float
+        ), "The gradient clipping parameter should be None for no clipping or a float"
 
         # Define optimizer with different learning rates for
         # policy and value networks
@@ -150,7 +157,7 @@ class VPGPolicy:
                 trajectories
             ):
                 logger.info(f"Mini-batch {minibatch + 1} / {num_minibatches}")
-                epoch_loss += self.minibatch_update(
+                minibatch_losses = self.minibatch_update(
                     optimizer,
                     states,
                     actions,
@@ -159,6 +166,7 @@ class VPGPolicy:
                     std_returns=std_returns,
                     clip_gradient_norm=clip_gradient_norm,
                 )
+                epoch_loss += minibatch_losses["total_loss"]
 
             # Compute mean epoch metrics
             if len(epoch_infos) > 0:
@@ -249,6 +257,9 @@ class VPGPolicy:
         """
         Perform a mini-batch step and update network parameters
         """
+        # Zero-out gradients
+        optimizer.zero_grad()
+
         # Compute log-probabilities of actions
         log_probs = self.policy_nn(states)
 
@@ -258,7 +269,7 @@ class VPGPolicy:
             values = self.baseline_nn(states).squeeze()
 
         # Compute loss
-        total_loss = self.compute_loss(
+        losses = self.compute_loss(
             returns,
             actions,
             values,
@@ -267,11 +278,10 @@ class VPGPolicy:
             std_returns=std_returns,
             std_advs=std_advs,
         )
-        logger.info(f"Total loss: {total_loss}")
+        logger.info(f"Losses: {dict([(k, v.item()) for k, v in losses.items()])}")
 
-        # Compute gradients
-        optimizer.zero_grad()
-        total_loss.backward()
+        # Backward pass
+        losses["total_loss"].backward()
 
         # Log gradient norms
         logger.info(
@@ -299,7 +309,7 @@ class VPGPolicy:
         # Update parameters
         optimizer.step()
 
-        return total_loss
+        return losses
 
     def compute_advantages(self, returns, values, log_probs, std_advs=False):
         """
@@ -323,15 +333,19 @@ class VPGPolicy:
         """
         Compute VPG loss function
         """
+        losses = dict()
         if std_returns:
             returns = (returns - returns.mean()) / (returns.std() + 1e-6)
         advantages = self.compute_advantages(
             returns, values, log_probs, std_advs=std_advs
         )
-        total_loss = self.losses["policy"](log_probs * advantages, actions)
+        losses["policy_loss"] = self.losses["policy"](log_probs * advantages, actions)
         if self.baseline_nn is not None:
-            total_loss += self.losses["baseline"](values, returns)
-        return total_loss
+            losses["baseline_loss"] = self.losses["baseline"](values, returns)
+        losses["total_loss"] = losses["policy_loss"] + (
+            self.alpha * losses["baseline_loss"] if self.baseline_nn is not None else 0
+        )
+        return losses
 
     def execute_episode(self, render=False):
         """
@@ -447,6 +461,7 @@ class TRPOPolicy(VPGPolicy):
         policy_nn,
         baseline_nn,
         seed=42,
+        alpha=0.5,
         beta=1.0,
         kl_target=None,
     ):
@@ -455,11 +470,13 @@ class TRPOPolicy(VPGPolicy):
         ), "The beta hyperparameter should be given as a float"
         assert kl_target is None or isinstance(
             kl_target, float
-        ), "The KL divergence target should be given as a float"
-        super().__init__(env, policy_nn, baseline_nn=baseline_nn, seed=seed)
+        ), "The KL divergence target should be given as None or a float"
+        super().__init__(
+            env, policy_nn, baseline_nn=baseline_nn, alpha=alpha, seed=seed
+        )
         self.beta = beta
         self.kl_target = kl_target
-        self.losses["constraint"] = nn.KLDivLoss(log_target=True, reduction="batchmean")
+        self.losses["constraint"] = nn.KLDivLoss(log_target=True, reduction="mean")
 
     def compute_loss(
         self,
@@ -475,6 +492,7 @@ class TRPOPolicy(VPGPolicy):
         Compute TRPO loss function
         """
         # Compute advantages
+        losses = dict()
         if std_returns:
             returns = (returns - returns.mean()) / (returns.std() + 1e-6)
         advantages = self.compute_advantages(
@@ -484,21 +502,28 @@ class TRPOPolicy(VPGPolicy):
         # Compute the probability ratio
         probs_ratio = torch.exp(log_probs - old_log_probs)
 
-        # Compute total loss as the sum of TRPO loss, baseline loss and
-        # the trust region constraint
-        total_loss = self.losses["policy"](probs_ratio * advantages, actions)
-        total_loss += self.losses["baseline"](values, returns)
+        # Compute TRPO loss and baseline loss
+        losses["policy_loss"] = self.losses["policy"](probs_ratio * advantages, actions)
+        losses["baseline_loss"] = self.losses["baseline"](values, returns)
 
-        # Use KL divergence as regularizer and possibily update beta
-        kl_div = self.losses["constraint"](old_log_probs, log_probs)
-        total_loss += self.beta * kl_div
+        # Use KL divergence as regularizer
+        losses["constraint_loss"] = self.losses["constraint"](old_log_probs, log_probs)
+
+        # Compute total loss
+        losses["total_loss"] = (
+            losses["policy_loss"]
+            + self.alpha * losses["baseline_loss"]
+            - self.beta * losses["constraint_loss"]
+        )
+
+        # Update beta
         if self.kl_target is not None:
-            if kl_div < (self.kl_target / 1.5):
+            if losses["constraint_loss"] < (self.kl_target / 1.5):
                 self.beta /= 2
-            elif kl_div > (self.kl_target * 1.5):
+            elif losses["constraint_loss"] > (self.kl_target * 1.5):
                 self.beta *= 2
 
-        return total_loss
+        return losses
 
 
 class PPOPolicy(VPGPolicy):
@@ -512,16 +537,17 @@ class PPOPolicy(VPGPolicy):
         policy_nn,
         baseline_nn,
         seed=42,
-        c1=1.0,
-        c2=0.01,
+        alpha=1.0,
+        beta=0.01,
         eps=0.2,
     ):
-        assert isinstance(c1, float) and isinstance(
-            c2, float
-        ), "The c1 and c2 hyperparameters should be given as floats"
-        super().__init__(env, policy_nn, baseline_nn=baseline_nn, seed=seed)
-        self.c1 = c1
-        self.c2 = c2
+        assert isinstance(
+            alpha, float
+        ), "The alpha hyperparameter should be given as float"
+        super().__init__(
+            env, policy_nn, baseline_nn=baseline_nn, alpha=alpha, seed=seed
+        )
+        self.beta = beta
         self.eps = eps
 
     def compute_loss(
@@ -538,6 +564,7 @@ class PPOPolicy(VPGPolicy):
         Compute PPO loss function
         """
         # Compute advantages
+        losses = dict()
         if std_returns:
             returns = (returns - returns.mean()) / (returns.std() + 1e-6)
         advantages = self.compute_advantages(
@@ -553,10 +580,17 @@ class PPOPolicy(VPGPolicy):
             torch.clamp(probs_ratio, 1 - self.eps, 1 + self.eps) * advantages,
         )
 
-        # Compute total loss as the sum of PPO loss, baseline loss and
-        # entropy of the categorical action distribution
-        total_loss = self.losses["policy"](objective, actions)
-        total_loss += self.c1 * self.losses["baseline"](values, returns)
-        total_loss += self.c2 * Categorical(probs=torch.exp(log_probs)).entropy().mean()
+        # Compute PPO loss, baseline loss and entropy of the categorical action distribution
+        losses["policy_loss"] = self.losses["policy"](objective, actions)
+        losses["baseline_loss"] = self.losses["baseline"](values, returns)
+        losses["entropy_loss"] = (
+            Categorical(probs=torch.exp(log_probs)).entropy().mean()
+        )
 
-        return total_loss
+        # Compute total loss
+        losses["total_loss"] = (
+            losses["policy_loss"]
+            + self.alpha * losses["baseline_loss"]
+            - self.beta * losses["entropy_loss"]
+        )
+        return losses
