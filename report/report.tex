@@ -13,6 +13,9 @@
 \usepackage{algorithm}
 \usepackage{algpseudocode}
 \usepackage{amsmath}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{graphicx}
 
 \title{Solving the Harvest CPR Appropriation Problem with Policy Gradient Techniques}
 
@@ -79,47 +82,69 @@ Since the returns of a single agent are poor indicators of the group's behavior 
 \end{equation}
 
 \section{Experiments}
-In this section we show results obtained by running multiple experiments\footnote{Training experiments are logged on \href{https://wandb.ai/wadaboa/cpr-appropriation}{W\&B} \cite{wandb}.}. In particular, for the single-agent case we only rely on RLlib's DQN implementation, while for the multi-agent case we test both RLlib's DQN and our custom policy gradient implementations. Given the computational complexity of the environment in a multi-agent scenario, running experiments for more than $1000$ episodes is prohibitive and would require more resources: thus, we limit ourselves to such number of episodes and observe outcomes up to that point. Additionally, we test the correctness of our VPG, TRPO and PPO methods on the standard Cartpole environment, where we reach the reward threshold ($200$) to consider the problem as solved with all algorithms. Moreover, we rely on PPO to train multiple agents on the Harvest environment, both with and without the gifting action and always with the tagging action enabled.
+In this section we show results obtained by running multiple experiments\footnote{Training experiments are logged on \href{https://wandb.ai/wadaboa/cpr-appropriation}{W\&B} \cite{wandb}.} to test the correctness of the implemented policy gradient techniques and to see how they compare with the value-based methods used in the original paper \cite{harvest}.
 
-Regarding DQN, the only difference w.r.t. the original algorithm is that we rely on its double dueling variant, instead of using the vanilla version. Moreover, the exploration strategy is $\epsilon$-greedy with a linear decay from $1.0$ to $0.1$ over the course of the episode, while all the other hyperparameters are left as RLlib's defaults. For TRPO $\beta=1.0$ and $d_{targ}=0.01$, while for PPO $c_1=1.0$, $c_2=0.0$ and $\epsilon=0.2$.
+For what regards hyperparameters, in DQN the only difference w.r.t. the original algorithm is that we rely on its double dueling variant, instead of using the vanilla version. Moreover, the exploration strategy is $\epsilon$-greedy with a linear decay from $1.0$ to $0.1$ over the course of the episode, while all the other hyperparameters are left as RLlib's defaults. For TRPO $\beta=1.0$ and $d_{targ}=0.01$, while for PPO $c_1=1.0$, $c_2=0.01$ and $\epsilon=0.2$.
 
-All neural networks are Multi-Layer Perceptrons (MLPs) with an input size of $1260$ (given by the observation dimension $3\times20\times21$), $2$ hidden layers with $32$ units each and an output layer composed of either a single neuron (for value functions) or as many units as there are actions (for policy functions).
+When training on Harvest, all neural networks are Multi-Layer Perceptrons (MLPs) with an input size of $1260$ (given by the observation dimension $3\times20\times21$), $2$ hidden layers with $32$ units each and an output layer composed of either a single neuron (for value functions) or as many units as there are actions (for policy functions). Moreover, single agents are trained on a $25\times7$ grid, while multiple agents are trained on a $39\times17$ map.
 
-\subsection{Single agent}
-In order to check the correctness of the implemented environment, we trained a single agent on the same small map ($25\times7$) as in the original paper \cite{harvest}. At the very beginning, apples have a spawn probability of $0.2$ for each grid location. Results show that with such modifications the single agent is able to learn much faster to follow a greedy collection of apples: indeed, in the original paper they train for $50000$ episodes, while our training procedure runs for about $1000$ episodes.
+\subsection{Single-agent DQN vs VPG with RLlib}
+To make sure our custom environment implementation is correct, we first train a DQN model (in its double, dueling variant) with a single agent using RLlib and observe that the selected maximum number of episodes ($700$ instead of the $50000$ used in the paper) is enough to converge to good $Q$-value estimates, as the agent learns a policy that achieves a mean efficiency $U$ of about $75$, while also managing to keep the flow healthy and avoid depleting the stock (this is given by the stable sustainability $S$ of such policy), as shown in figure \ref{fig:dqn-vs-vpg-rllib}.
 
-\subsection{Multi-agent}
+After making sure that a single agent is able to learn effectively, we want to test how well-optimized policy gradient methods stack up to value-based ones. To do so, we still rely on RLlib's implementation of a Vanilla Policy Gradient algorithm (trained for $700$ episodes and with default hyperparameters) and observe that the agent is not able to converge to policies as good as the ones learned by value-based methods. In particular, figure \ref{fig:dqn-vs-vpg-rllib} shows that the single agent VPG training run only reached a mean efficiency of $U=37$ and a sustainability of $S=230$. 
 
-Table \ref{table:results} shows results (in terms of social outcome metrics) obtained by training $11$ agents on a $39\times19$ grid with $1000$ maximum steps for each episode
-
-\subsubsection{Value-based}
-
-
-\subsubsection{Policy gradient}
-
-\section{Results}
-
-Table \ref{table:results} shows results (in terms of social outcome metrics) obtained by training $11$ agents on a $39\times19$ grid with $1000$ maximum steps for each episode. The DQN module is trained using RLlib \cite{rllib}, while policy gradient methods are implemented from scratch\footnote{The code is publicly available on \href{https://github.com/Wadaboa/cpr-appropriation}{Github}.}. Training experiments are logged on \href{https://wandb.ai/wadaboa/cpr-appropriation}{W\&B} \cite{wandb}.
-
-All neural networks are Multi-Layer Perceptrons (MLPs) with an input size of $1260$ (given by the observation dimension $3\times20\times21$), $2$ hidden layers with $32$ units each and an output layer composed of either a single neuron (for value functions) or as many units as there are actions (for policy functions).
-
-For DQN, the exploration strategy is $\epsilon$-greedy with a linear decay from $1.0$ to $0.1$ over the course of the episode, while all the other hyperparameters are left as RLlib's defaults. For TRPO $\beta=1.0$ and $d_{targ}=0.01$, while for PPO $c_1=1.0$, $c_2=0.0$ and $\epsilon=0.2$.
-
-\begin{table}[h]
-  \caption{Results}
-  \label{table:results}
+\begin{figure}
   \centering
-  \begin{tabular}{lllll}
-    \toprule
-    & U     & E     & S & P \\
-    \cmidrule(r){2-5}
-    DQN & $0.0$ & $0.0$ & $0.0$ & $0.0$ \\
-    VPG & $0.0$ & $0.0$ & $0.0$ & $0.0$ \\
-    TRPO & $0.0$ & $0.0$ & $0.0$ & $0.0$ \\
-    PPO & $0.0$ & $0.0$ & $0.0$ & $0.0$ \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+  \begin{subfigure}[b]{0.45\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{../assets/dqn-vpg-rllib-single-efficiency}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.45\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{../assets/dqn-vpg-rllib-single-sustainability}
+  \end{subfigure}
+  \caption{DQN vs VPG single-agent with RLlib on Harvest}
+  \label{fig:dqn-vs-vpg-rllib}
+\end{figure}
+
+The outcome of such experiments shows that value-based methods (w.r.t. policy gradient ones) seem more suited for the Harvest environment.
+
+\subsection{Custom VPG vs TRPO vs PPO on Cartpole}
+Before running our experiments on the commons game, we test our custom algorithms on a popular environment known as Cartpole: the offical description of such environment goes as follows. A pole is attached by an un-actuated joint to a cart, which moves along a frictionless track. The system is controlled by applying a force of $+1$ or $-1$ to the cart. The pendulum starts upright, and the goal is to prevent it from falling over. A reward of $+1$ is provided for every timestep that the pole remains upright. The episode ends when the pole is more than $15$ degrees from vertical, or the cart moves more than $2.4$ units from the center. The problem is considered as solved when the agent is able to obtain an average reward of $195$ over $100$ consecutive trials.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.7\textwidth]{../assets/cartpole-pg-return}
+  \caption{Custom VPG vs TRPO vs PPO on Cartpole}
+  \label{fig:cartpole-pg-return}
+\end{figure}
+
+Figure \ref{fig:cartpole-pg-return} shows a comparison of VPG, TRPO and PPO on the Cartpole environment, with a number of training epochs equal to $800$. Results reveal that VPG tends to converge faster to higher returns, at the cost of a very high variance (both in returns and in the loss), while both TRPO and PPO achieve better results than PPO, but do so in a smoother way. 
+
+The main outcome of this experiment is that our custom implementations are valid, as agents are able to learn effectively in the selected test environment.
+
+\subsection{Custom VPG vs TRPO vs PPO on single-agent Harvest}
+This experiment tests how our custom algorithms compare with each other on the commons game, with just a single agent and $1000$ training epochs. Figure \ref{fig:vpg-trpo-ppo-single} shows that both VPG and PPO converge to similar average returns (close to the ones obtained with RLlib's implementation of VPG, as reported in figure \ref{fig:dqn-vs-vpg-rllib}). Moreover, we can observe that TRPO diverges to worse efficiencies $U$ during training, while on the Cartpole environment it performed on par with both VPG and PPO. This could be explained by the choice of hyperparameters, which could be optimized by some kind of search in the parameter space, such as grid search: unfortunately, such computations are costly in terms of resource requirements and we leave them for future improvements.
+
+\begin{figure}
+  \centering
+  \begin{subfigure}[b]{0.45\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{../assets/vpg-trpo-ppo-single-efficiency}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.45\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{../assets/vpg-trpo-ppo-single-sustainability}
+  \end{subfigure}
+  \caption{Custom single-agent VPG vs TRPO vs PPO on Harvest}
+  \label{fig:vpg-trpo-ppo-single}
+\end{figure}
+
+\section{Custom PPO on multi-agent Harvest}
+Given the computational complexity of the Harvest environment in a multi-agent scenario, running experiments for more than $1000$ episodes is prohibitive and would require more resources: thus, we limit ourselves to such number of episodes and observe outcomes up to that point
+
 
 \section{Conclusions}
 
