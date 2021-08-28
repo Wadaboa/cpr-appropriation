@@ -513,7 +513,7 @@ class TRPOPolicy(VPGPolicy):
         losses["total_loss"] = (
             losses["policy_loss"]
             + self.alpha * losses["baseline_loss"]
-            - self.beta * losses["constraint_loss"]
+            + self.beta * losses["constraint_loss"]
         )
 
         # Update beta
