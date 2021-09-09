@@ -79,6 +79,25 @@ class AgentAction(CustomIntEnum):
     TAG = 7
     GIFT = 8
 
+    @classmethod
+    def still_actions(cls):
+        """
+        Return a list of actions that do not require moving the agent
+        """
+        return (cls.ROTATE_LEFT, cls.ROTATE_RIGHT, cls.STAND_STILL, cls.TAG, cls.GIFT)
+
+    @classmethod
+    def is_still_action(cls, action):
+        """
+        Check if the given action is a no-movement action
+        """
+        assert AgentAction.is_valid(
+            action
+        ), f"The given action should be compatible with AgentAction, {action} {AgentAction.values()}, {type(action)}"
+        if isinstance(action, int) or isinstance(action, np.int64):
+            action = AgentAction(action)
+        return action in cls.still_actions()
+
 
 class CPRGridActionSpace(spaces.Discrete):
     """
@@ -262,6 +281,7 @@ class GridCell(CustomIntEnum):
     EMPTY = 0
     RESOURCE = 1
     AGENT = 2
+    ORIENTATION = 3
 
 
 class GiftingMechanism(CustomIntEnum):

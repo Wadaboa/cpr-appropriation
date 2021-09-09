@@ -24,20 +24,22 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
     RESOURCE_COLLECTION_REWARD = 1
     GIFTING_REWARD = 1
 
+    # Rendering option
+    FIGSIZE = (12, 10)
+    OBSERVATION_SHADOW_ID = 3
+
     # Colors
     GRID_CELL_COLORS = {
         utils.GridCell.EMPTY: "black",
         utils.GridCell.RESOURCE: "green",
         utils.GridCell.AGENT: "red",
+        OBSERVATION_SHADOW_ID: "silver",
     }
     FOV_OWN_AGENT_COLOR = "blue"
     COLORMAP = colors.ListedColormap(list(GRID_CELL_COLORS.values()))
     COLOR_BOUNDARIES = colors.BoundaryNorm(
         utils.GridCell.values() + [utils.GridCell.size()], utils.GridCell.size()
     )
-
-    # Rendering option
-    FIGSIZE = (12, 10)
 
     # Gym variables
     metadata = {"render.modes": ["human", "rgb_array"]}
@@ -89,12 +91,15 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         )
         self.gifting_fixed_budget_size = gifting_fixed_budget_size
         self.add_social_outcome_metrics = add_social_outcome_metrics
+        assert (
+            self.fov_squares_front == self.fov_squares_side * 2 + 1
+        ), "FOV should be squared"
 
         # Gym requirements
         self.action_space = utils.CPRGridActionSpace()
         self.observation_space = spaces.Box(
             low=0,
-            high=255,
+            high=1,
             shape=(
                 self.fov_squares_front,
                 self.fov_squares_side * 2 + 1,
@@ -190,6 +195,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         grid = np.full((self.grid_height, self.grid_width), utils.GridCell.EMPTY.value)
         for agent_position in self.agent_positions:
             grid[agent_position.y, agent_position.x] = utils.GridCell.AGENT.value
+            grid = self._mark_orientation(grid, agent_position)
 
         # Compute initial resources
         resource_mask = np.random.binomial(
@@ -205,6 +211,30 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             if grid[y, x] == utils.GridCell.EMPTY.value:
                 grid[y, x] = utils.GridCell.RESOURCE.value
 
+        return grid
+
+    def _mark_orientation(self, grid, agent_position, remove=False):
+        """
+        Mark the agent's orientation in the grid
+        """
+        x, y, o = agent_position.x, agent_position.y, agent_position.o
+        if o == utils.AgentOrientation.UP:
+            y -= 1
+        elif o == utils.AgentOrientation.DOWN:
+            y += 1
+        elif o == utils.AgentOrientation.LEFT:
+            x -= 1
+        elif o == utils.AgentOrientation.RIGHT:
+            x += 1
+        if (
+            (x != agent_position.x or y != agent_position.y)
+            and (x >= 0 and x < self.grid_width)
+            and (y >= 0 and y < self.grid_height)
+        ):
+            if not remove and grid[y, x] == utils.GridCell.EMPTY.value:
+                grid[y, x] = utils.GridCell.ORIENTATION.value
+            elif grid[y, x] == utils.GridCell.ORIENTATION.value:
+                grid[y, x] = utils.GridCell.EMPTY.value
         return grid
 
     def step(self, action_dict):
@@ -342,9 +372,10 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         new_position = current_position.get_new_position(action)
 
         # If move is not feasible the agent stands still
-        if not self._is_move_feasible(new_position):
+        if not self._is_move_feasible(action, new_position):
             return current_position
 
+        print("RET", new_position)
         return new_position
 
     def _move_agent(self, agent_handle, new_position):
@@ -356,16 +387,19 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         ), "The given position should be an instance of AgentPosition"
         current_position = self.agent_positions[agent_handle]
         self.grid[current_position.y, current_position.x] = utils.GridCell.EMPTY.value
+        self.grid = self._mark_orientation(self.grid, current_position, remove=True)
         self.grid[new_position.y, new_position.x] = utils.GridCell.AGENT.value
+        self.grid = self._mark_orientation(self.grid, new_position)
         self.agent_positions[agent_handle] = new_position
 
-    def _is_move_feasible(self, position):
+    def _is_move_feasible(self, action, new_position):
         """
         Check if the move leading the agent to the given position
         is a feasible move or an illegal one
         """
-        return self._is_position_in_grid(position) and not self._is_position_occupied(
-            position
+        return self._is_position_in_grid(new_position) and (
+            not self._is_position_occupied(new_position)
+            or utils.AgentAction.is_still_action(action)
         )
 
     def _is_position_occupied(self, position):
@@ -446,6 +480,20 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             fov,
         )
         fov[0, self.fov_squares_side] = colors.to_rgb(self.FOV_OWN_AGENT_COLOR)
+
+        # Rotate again so as to have a different observation
+        # depending on the agent's orientation
+        agent_position = self.agent_positions[agent_handle]
+        k = (
+            1
+            if agent_position.o == utils.AgentOrientation.LEFT
+            else 2
+            if agent_position.o == utils.AgentOrientation.UP
+            else 3
+            if agent_position.o == utils.AgentOrientation.RIGHT
+            else 0
+        )
+        fov = np.rot90(fov, k=k).copy()
 
         return fov
 
@@ -674,10 +722,11 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         """
         Plot the given image in a standard way
         """
+        new_img = img.copy()
         fig, ax = plt.subplots(figsize=self.FIGSIZE)
-        height, width = img.shape[0], img.shape[1]
-        img = ax.imshow(
-            img,
+        height, width = new_img.shape[0], new_img.shape[1]
+        new_img = ax.imshow(
+            new_img,
             cmap=self.COLORMAP if map_colors else None,
             norm=self.COLOR_BOUNDARIES if map_colors else None,
             origin="upper",
@@ -688,7 +737,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             ax.set_xticks(np.arange(0, width, 1), minor=False)
             ax.set_yticks(np.arange(0, height, 1), minor=False)
             ax.xaxis.tick_top()
-        return fig, ax, img
+        return fig, ax, new_img
 
     def plot_observation(self, obs):
         """
