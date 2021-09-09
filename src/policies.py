@@ -353,73 +353,74 @@ class VPGPolicy:
         in the environment and return a list of trajectories,
         one for each agent
         """
-        # Initialize trajectories and reset environment
-        self.policy_nn.eval()
-        trajectories = memory.TrajectoryPool(n=self.n_agents)
-        observations = self.env.reset()
+        with torch.no_grad():
+            # Initialize trajectories and reset environment
+            self.policy_nn.eval()
+            trajectories = memory.TrajectoryPool(n=self.n_agents)
+            observations = self.env.reset()
 
-        # Initialize plot
-        if render:
-            _, _, img = self.env.plot(self.env.render("rgb_array"))
-
-        # Iterate as long as agents are not done or until
-        # we reach the maximum number of time-steps
-        for _ in range(self.max_steps):
-            # Plot previous observations
+            # Initialize plot
             if render:
-                display.display(plt.gcf())
+                _, _, img = self.env.plot(self.env.render("rgb_array"))
 
-            # Compute the best actions based on the current policy
-            action_dict, action_probs = dict(), dict()
-            for agent_handle in range(self.n_agents):
-                log_probs = self.policy_nn(
-                    torch.tensor(
-                        observations[agent_handle],
-                        dtype=torch.float32,
-                        device=utils.get_torch_device(),
+            # Iterate as long as agents are not done or until
+            # we reach the maximum number of time-steps
+            for _ in range(self.max_steps):
+                # Plot previous observations
+                if render:
+                    display.display(plt.gcf())
+
+                # Compute the best actions based on the current policy
+                action_dict, action_probs = dict(), dict()
+                for agent_handle in range(self.n_agents):
+                    log_probs = self.policy_nn(
+                        torch.tensor(
+                            observations[agent_handle],
+                            dtype=torch.float32,
+                            device=utils.get_torch_device(),
+                        )
                     )
-                )
-                action_probs[agent_handle] = log_probs.cpu().detach().numpy()
-                action = np.random.choice(
-                    np.arange(self.action_space_size),
-                    p=np.exp(action_probs[agent_handle]),
-                )
-                action_dict[agent_handle] = action.item()
+                    action_probs[agent_handle] = log_probs.cpu().detach().numpy()
+                    action = np.random.choice(
+                        np.arange(self.action_space_size),
+                        p=np.exp(action_probs[agent_handle]),
+                    )
+                    action_dict[agent_handle] = action.item()
 
-            # Perform a step in the environment
-            new_observations, rewards, dones, infos = self.env.step(action_dict)
+                # Perform a step in the environment
+                new_observations, rewards, dones, infos = self.env.step(action_dict)
 
-            # Update rendering
-            if render:
-                display.clear_output(wait=True)
-                img.set_data(self.env.render(mode="rgb_array"))
+                # Update rendering
+                if render:
+                    display.clear_output(wait=True)
+                    img.set_data(self.env.render(mode="rgb_array"))
 
-            # Update each agent's trajectory
-            for agent_handle in range(self.n_agents):
-                trajectories.add_to_trajectory(
-                    agent_handle,
-                    observations[agent_handle],
-                    action_dict[agent_handle],
-                    action_probs[agent_handle],
-                    rewards[agent_handle],
-                    new_observations[agent_handle],
-                )
+                # Update each agent's trajectory
+                for agent_handle in range(self.n_agents):
+                    trajectories.add_to_trajectory(
+                        agent_handle,
+                        observations[agent_handle],
+                        action_dict[agent_handle],
+                        action_probs[agent_handle],
+                        rewards[agent_handle],
+                        new_observations[agent_handle],
+                    )
 
-            # Update observations and possibly stop
-            # if all agents are done
-            observations = new_observations
-            if "__all__" in dones and dones["__all__"]:
-                logger.debug(f"Early stopping, all agents done")
-                break
+                # Update observations and possibly stop
+                # if all agents are done
+                observations = new_observations
+                if "__all__" in dones and dones["__all__"]:
+                    logger.debug(f"Early stopping, all agents done")
+                    break
 
-        # Store episode infos
-        all_infos = infos["__all__"] if "__all__" in infos else dict()
+            # Store episode infos
+            all_infos = infos["__all__"] if "__all__" in infos else dict()
 
-        # Compute mean episode return
-        agents_returns = trajectories.get_trajectory_returns(
-            discount=1, to_go=False, as_torch=False
-        )
-        mean_return = np.mean(agents_returns)
+            # Compute mean episode return
+            agents_returns = trajectories.get_trajectory_returns(
+                discount=1, to_go=False, as_torch=False
+            )
+            mean_return = np.mean(agents_returns)
 
         return trajectories, all_infos, mean_return
 
