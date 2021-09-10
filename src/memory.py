@@ -22,7 +22,7 @@ class Trajectory:
         self.device = utils.get_torch_device()
 
     def add_timestep(
-        self, state, action, action_probs, legal_actions, reward, next_state
+        self, state, action, action_probs, reward, next_state, legal_actions=None
     ):
         """
         Add the given (s, a, r, s') tuple to the trajectory
@@ -30,9 +30,9 @@ class Trajectory:
         self.states.append(state)
         self.actions.append(action)
         self.action_probs.append(action_probs)
-        self.legal_actions.append(legal_actions)
         self.rewards.append(reward)
         self.next_states.append(next_state)
+        self.legal_actions.append(legal_actions or [True] * len(action_probs))
         self.current_timestep += 1
 
     def get_states(self, as_torch=True):
@@ -68,17 +68,6 @@ class Trajectory:
             else torch.tensor(self.action_probs, device=self.device)
         )
 
-    def get_legal_actions(self, as_torch=True):
-        """
-        Return the list of legal actions in the current trajectory
-        either as a Numpy array or as a PyTorch tensor
-        """
-        return (
-            np.array(self.legal_actions)
-            if not as_torch
-            else torch.tensor(self.legal_actions, device=self.device)
-        )
-
     def get_rewards(self, as_torch=True):
         """
         Return the list of rewards in the current trajectory
@@ -99,6 +88,17 @@ class Trajectory:
             np.array(self.next_states)
             if not as_torch
             else torch.tensor(self.next_states, device=self.device)
+        )
+
+    def get_legal_actions(self, as_torch=True):
+        """
+        Return the list of legal actions in the current trajectory
+        either as a Numpy array or as a PyTorch tensor
+        """
+        return (
+            np.array(self.legal_actions)
+            if not as_torch
+            else torch.tensor(self.legal_actions, device=self.device)
         )
 
     def get_returns(self, max_timestep=None, discount=1, to_go=False, as_torch=True):
@@ -130,9 +130,9 @@ class Trajectory:
             self.states[t],
             self.actions[t],
             self.action_probs[t],
-            self.legal_actions[t],
             self.rewards[t],
             self.next_states[t],
+            self.legal_actions[t]
         )
 
     def __len__(self):
@@ -181,13 +181,13 @@ class TrajectoryPool:
             self.add(trajectory_pool.get_trajectory(i))
 
     def add_to_trajectory(
-        self, i, state, action, action_probs, legal_actions, reward, next_state
+        self, i, state, action, action_probs, reward, next_state, legal_actions=None
     ):
         """
         Add a (s, a, r, s') tuple to the i-th trajectory in the pool
         """
         self.trajectories[i].add_timestep(
-            state, action, action_probs, legal_actions, reward, next_state
+            state, action, action_probs, reward, next_state, legal_actions=legal_actions
         )
 
     def tensorify(self):
@@ -207,21 +207,21 @@ class TrajectoryPool:
             states.append(trajectory.get_states(as_torch=True))
             actions.append(trajectory.get_actions(as_torch=True))
             action_probs.append(trajectory.get_action_probs(as_torch=True))
-            legal_actions.append(trajectory.get_legal_actions(as_torch=True))
             returns.append(
                 trajectory.get_returns(
                     discount=self.discount, to_go=True, as_torch=True
                 )
             )
             next_states.append(trajectory.get_next_states(as_torch=True))
+            legal_actions.append(trajectory.get_legal_actions(as_torch=True))
 
         return (
             torch.cat(states, dim=0).to(dtype=torch.float32, device=self.device),
             torch.cat(actions, dim=0).to(dtype=torch.int64, device=self.device),
             torch.cat(action_probs, dim=0).to(dtype=torch.float32, device=self.device),
-            torch.cat(legal_actions, dim=0).to(dtype=torch.int64, device=self.device),
             torch.cat(returns, dim=0).to(dtype=torch.float32, device=self.device),
             torch.cat(next_states, dim=0).to(dtype=torch.float32, device=self.device),
+            torch.cat(legal_actions, dim=0).to(dtype=torch.int64, device=self.device),
         )
 
     def num_trajectories(self):

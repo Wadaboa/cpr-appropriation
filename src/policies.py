@@ -160,9 +160,9 @@ class VPGPolicy:
                 states,
                 actions,
                 old_log_probs,
-                legal_actions,
                 returns,
-                _,
+                next_states,
+                legal_actions,
             ) in enumerate(trajectories):
                 logger.info(f"Mini-batch {minibatch + 1} / {num_minibatches}")
                 minibatch_losses = self.minibatch_update(
@@ -170,8 +170,8 @@ class VPGPolicy:
                     states,
                     actions,
                     old_log_probs,
-                    legal_actions,
                     returns,
+                    legal_actions=legal_actions,
                     std_returns=std_returns,
                     clip_gradient_norm=clip_gradient_norm,
                 )
@@ -258,8 +258,8 @@ class VPGPolicy:
         states,
         actions,
         old_log_probs,
-        legal_actions,
         returns,
+        legal_actions=None,
         std_returns=True,
         std_advs=False,
         clip_gradient_norm=0.5,
@@ -383,8 +383,10 @@ class VPGPolicy:
                 # Compute the best actions based on the current policy
                 action_dict, action_probs, legal_actions = dict(), dict(), dict()
                 for agent_handle in range(self.n_agents):
-                    legal_actions[agent_handle] = self.env.get_legal_actions(
-                        agent_handle
+                    legal_actions[agent_handle] = (
+                        self.env.get_legal_actions(agent_handle)
+                        if hasattr(self.env, "get_legal_actions")
+                        else None
                     )
                     log_probs = self.policy_nn(
                         torch.tensor(
@@ -396,7 +398,9 @@ class VPGPolicy:
                             legal_actions[agent_handle],
                             dtype=torch.int64,
                             device=self.device,
-                        ),
+                        )
+                        if legal_actions[agent_handle] is not None
+                        else None,
                     )
                     action_probs[agent_handle] = log_probs.cpu().detach().numpy()
                     action = np.random.choice(
@@ -420,9 +424,9 @@ class VPGPolicy:
                         observations[agent_handle],
                         action_dict[agent_handle],
                         action_probs[agent_handle],
-                        legal_actions[agent_handle],
                         rewards[agent_handle],
                         new_observations[agent_handle],
+                        legal_actions=legal_actions[agent_handle],
                     )
 
                 # Update observations and possibly stop
