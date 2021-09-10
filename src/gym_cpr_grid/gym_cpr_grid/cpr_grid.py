@@ -24,22 +24,22 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
     RESOURCE_COLLECTION_REWARD = 1
     GIFTING_REWARD = 1
 
-    # Rendering option
-    FIGSIZE = (12, 10)
-    OBSERVATION_SHADOW_ID = 3
-
     # Colors
     GRID_CELL_COLORS = {
+        utils.GridCell.OUTSIDE: "gold",
         utils.GridCell.EMPTY: "black",
         utils.GridCell.RESOURCE: "green",
         utils.GridCell.AGENT: "red",
-        OBSERVATION_SHADOW_ID: "silver",
+        utils.GridCell.ORIENTATION: "silver",
     }
     FOV_OWN_AGENT_COLOR = "blue"
     COLORMAP = colors.ListedColormap(list(GRID_CELL_COLORS.values()))
     COLOR_BOUNDARIES = colors.BoundaryNorm(
         utils.GridCell.values() + [utils.GridCell.size()], utils.GridCell.size()
     )
+
+    # Rendering option
+    FIGSIZE = (12, 10)
 
     # Gym variables
     metadata = {"render.modes": ["human", "rgb_array"]}
@@ -51,6 +51,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         grid_height,
         fov_squares_front=20,
         fov_squares_side=10,
+        global_obs=False,
         tagging_ability=True,
         tagging_steps=25,
         beam_squares_front=10,
@@ -68,6 +69,12 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         assert gifting_mechanism is None or utils.GiftingMechanism.is_valid(
             gifting_mechanism
         ), "The given gifting mechanism is not valid"
+        assert (
+            not global_obs
+            and fov_squares_front is not None
+            and fov_squares_side is not None
+            and fov_squares_front == fov_squares_side * 2 + 1
+        ) or global_obs, "You can either use a global observation or a local one (with specified FOV parameters)"
         super(CPRGridEnv, self).__init__()
 
         # Parameters
@@ -76,6 +83,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         self.grid_height = grid_height
         self.fov_squares_front = fov_squares_front
         self.fov_squares_side = fov_squares_side
+        self.global_obs = global_obs
         self.tagging_ability = tagging_ability
         self.tagging_steps = tagging_steps
         self.beam_squares_front = beam_squares_front
@@ -91,9 +99,6 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         )
         self.gifting_fixed_budget_size = gifting_fixed_budget_size
         self.add_social_outcome_metrics = add_social_outcome_metrics
-        assert (
-            self.fov_squares_front == self.fov_squares_side * 2 + 1
-        ), "FOV should be squared"
 
         # Gym requirements
         self.action_space = utils.CPRGridActionSpace()
@@ -101,11 +106,13 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             low=0,
             high=1,
             shape=(
-                self.fov_squares_front,
-                self.fov_squares_side * 2 + 1,
+                self.fov_squares_front if not self.global_obs else self.grid_height,
+                self.fov_squares_side * 2 + 1
+                if not self.global_obs
+                else self.grid_width,
                 3,
             ),
-            dtype=np.uint8,
+            dtype=np.float32,
         )
 
         # Dynamic variables
@@ -579,35 +586,55 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         and convert it into an RGB image
         """
         # Extract the FOV and convert it to 3 channels
-        fov = self._extract_fov(agent_handle)
+        fov = self.grid.copy()
+        if not self.global_obs:
+            fov = self._extract_fov(agent_handle)
         fov = np.stack((fov,) * 3, axis=-1)
 
-        # Set colors for resources and agents
+        # Set color for resources
         fov = np.where(
             fov == utils.GridCell.RESOURCE,
             colors.to_rgb(self.GRID_CELL_COLORS[utils.GridCell.RESOURCE]),
             fov,
         )
+
+        # Set color for opponents
         fov = np.where(
             fov == utils.GridCell.AGENT,
             colors.to_rgb(self.GRID_CELL_COLORS[utils.GridCell.AGENT]),
             fov,
         )
-        fov[0, self.fov_squares_side] = colors.to_rgb(self.FOV_OWN_AGENT_COLOR)
+
+        # Set color for padding cells
+        fov = np.where(
+            fov == utils.GridCell.OUTSIDE,
+            colors.to_rgb(self.GRID_CELL_COLORS[utils.GridCell.OUTSIDE]),
+            fov,
+        )
+
+        # Set color for current agent
+        x = (
+            self.fov_squares_side
+            if not self.global_obs
+            else self.agent_positions[agent_handle].x
+        )
+        y = 0 if not self.global_obs else self.agent_positions[agent_handle].y
+        fov[y, x] = colors.to_rgb(self.FOV_OWN_AGENT_COLOR)
 
         # Rotate again so as to have a different observation
-        # depending on the agent's orientation
-        agent_position = self.agent_positions[agent_handle]
-        k = (
-            1
-            if agent_position.o == utils.AgentOrientation.RIGHT
-            else 2
-            if agent_position.o == utils.AgentOrientation.UP
-            else 3
-            if agent_position.o == utils.AgentOrientation.LEFT
-            else 0
-        )
-        fov = np.rot90(fov, k=k).copy()
+        # depending on the agent's orientation (only for local observations)
+        if not self.global_obs:
+            agent_position = self.agent_positions[agent_handle]
+            k = (
+                1
+                if agent_position.o == utils.AgentOrientation.RIGHT
+                else 2
+                if agent_position.o == utils.AgentOrientation.UP
+                else 3
+                if agent_position.o == utils.AgentOrientation.LEFT
+                else 0
+            )
+            fov = np.rot90(fov, k=k).copy()
 
         return fov
 
@@ -707,7 +734,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             rotated_y,
             squares_side,
             squares_front + k % 2,
-            pad_value=pad_value or utils.GridCell.EMPTY.value,
+            pad_value=pad_value or utils.GridCell.OUTSIDE.value,
         )
 
         # Extract the FOV
@@ -857,7 +884,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         """
         Plot the given observation as an RGB image
         """
-        self.plot(obs * 255.0, map_colors=False)
+        self.plot(obs, map_colors=False)
         plt.show()
 
     def render(self, mode="human", ticks=False):

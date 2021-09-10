@@ -15,6 +15,7 @@ The environment can be customized with the following parameters, to be given as 
 - `grid_height`: height of the environment's grid (y-axis)
 - `fov_squares_front`: how many grid squares in front of the agent to consider for local observation extraction (defaults to 20)
 - `fov_squares_side`: how many grid squares on each side of the agent to consider for local observation extraction (defaults to 10)
+- `global_obs`: whether or not to use the entire grid as observation or a local FOV (defaults to false)
 - `tagging_ability`: enable or disable the tagging action (defaults to enabled)
 - `tagging_steps`: how many time-out steps for agents tagged by the laser beam (defaults to 25)
 - `beam_squares_front`: range of the laser beam on the y-axis (defaults to 10)

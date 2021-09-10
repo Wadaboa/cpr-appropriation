@@ -278,6 +278,7 @@ class GridCell(CustomIntEnum):
     either an agent or a resource or an empty cell
     """
 
+    OUTSIDE = -1
     EMPTY = 0
     RESOURCE = 1
     AGENT = 2
