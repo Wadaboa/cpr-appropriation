@@ -47,7 +47,7 @@ def set_seed(seed):
 
 def is_multi_agent_env(env):
     """
-    Check if the given environment is multi-agent by calling the reset fuction
+    Check if the given environment is multi-agent by calling the reset function
     and checking if the returned observations are in a dictionary or not
     """
     assert isinstance(env, gym.Env), "The given environment should be a Gym environment"
@@ -101,3 +101,16 @@ def get_torch_device():
     Return a GPU PyTorch device (if one is available), otherwise a CPU
     """
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def masked_log_softmax(vector, mask=None, dim=-1):
+    """
+    This performs a log-softmax on just the non-masked portions of `vector`
+    (see https://github.com/allenai/allennlp/blob/main/allennlp/nn/util.py#L286-L314)
+    """
+    if mask is not None:
+        mask = mask.float()
+        while mask.dim() < vector.dim():
+            mask = mask.unsqueeze(1)
+        vector = vector + (mask + 1e-45).log()
+    return torch.nn.functional.log_softmax(vector, dim=dim)

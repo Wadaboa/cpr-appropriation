@@ -237,6 +237,121 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
                 grid[y, x] = utils.GridCell.EMPTY.value
         return grid
 
+    def get_legal_actions(self, agent_handle):
+        """
+        Return a mask to be used to remove illegal actions
+        when computing policy probabilities
+        """
+        agent_position = self.agent_positions[agent_handle]
+        legal_actions = [True] * utils.AgentAction.size()
+
+        # Disable stepping forward
+        if (
+            (
+                agent_position.o == utils.AgentOrientation.UP.value
+                and agent_position.y == 0
+            )
+            or (
+                agent_position.o == utils.AgentOrientation.DOWN.value
+                and agent_position.y == self.grid_height - 1
+            )
+            or (
+                agent_position.o == utils.AgentOrientation.LEFT.value
+                and agent_position.x == 0
+            )
+            or (
+                (
+                    agent_position.o == utils.AgentOrientation.RIGHT.value
+                    and agent_position.x == self.grid_width - 1
+                )
+            )
+        ):
+            legal_actions[utils.AgentAction.STEP_FORWARD.value] = False
+
+        # Disable stepping backward
+        if (
+            (
+                agent_position.o == utils.AgentOrientation.UP.value
+                and agent_position.y == self.grid_height - 1
+            )
+            or (
+                agent_position.o == utils.AgentOrientation.DOWN.value
+                and agent_position.y == 0
+            )
+            or (
+                agent_position.o == utils.AgentOrientation.LEFT.value
+                and agent_position.x == self.grid_width - 1
+            )
+            or (
+                (
+                    agent_position.o == utils.AgentOrientation.RIGHT.value
+                    and agent_position.x == 0
+                )
+            )
+        ):
+            legal_actions[utils.AgentAction.STEP_BACKWARD.value] = False
+
+        # Disable stepping left
+        if (
+            (
+                agent_position.o == utils.AgentOrientation.UP.value
+                and agent_position.x == 0
+            )
+            or (
+                agent_position.o == utils.AgentOrientation.DOWN.value
+                and agent_position.x == self.grid_width - 1
+            )
+            or (
+                agent_position.o == utils.AgentOrientation.LEFT.value
+                and agent_position.y == self.grid_height - 1
+            )
+            or (
+                (
+                    agent_position.o == utils.AgentOrientation.RIGHT.value
+                    and agent_position.y == 0
+                )
+            )
+        ):
+            legal_actions[utils.AgentAction.STEP_LEFT.value] = False
+
+        # Disable stepping right
+        if (
+            (
+                agent_position.o == utils.AgentOrientation.UP.value
+                and agent_position.x == self.grid_width - 1
+            )
+            or (
+                agent_position.o == utils.AgentOrientation.DOWN.value
+                and agent_position.x == 0
+            )
+            or (
+                agent_position.o == utils.AgentOrientation.LEFT.value
+                and agent_position.y == 0
+            )
+            or (
+                (
+                    agent_position.o == utils.AgentOrientation.RIGHT.value
+                    and agent_position.y == self.grid_height - 1
+                )
+            )
+        ):
+            legal_actions[utils.AgentAction.STEP_RIGHT.value] = False
+
+        # Disable tagging when not enabled by the user or when only playing with one agent
+        if not self.tagging_ability or self.n_agents == 1:
+            legal_actions[utils.AgentAction.TAG.value] = False
+
+        # Disable the gifting action when not enabled by the user
+        # or the budget is over or when only playing with one agent
+        if (
+            self.gifting_mechanism is None
+            or self.gifting_budget[agent_handle] <= 0
+            or self.n_agents == 1
+        ):
+            legal_actions[utils.AgentAction.GIFT.value] = False
+
+        return legal_actions
+
     def step(self, action_dict):
         """
         Perform a step in the environment by moving all the agents
@@ -246,7 +361,7 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
             isinstance(action_dict, dict) and len(action_dict) == self.n_agents
         ), "Actions should be given as a dictionary with lenght equal to the number of agents"
 
-        # Initiliaze variables
+        # Initialize variables
         observations = {h: None for h in range(self.n_agents)}
         rewards = {h: 0 for h in range(self.n_agents)}
         dones = {h: False for h in range(self.n_agents)}
@@ -375,7 +490,6 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         if not self._is_move_feasible(action, new_position):
             return current_position
 
-        print("RET", new_position)
         return new_position
 
     def _move_agent(self, agent_handle, new_position):
@@ -486,11 +600,11 @@ class CPRGridEnv(MultiAgentEnv, gym.Env):
         agent_position = self.agent_positions[agent_handle]
         k = (
             1
-            if agent_position.o == utils.AgentOrientation.LEFT
+            if agent_position.o == utils.AgentOrientation.RIGHT
             else 2
             if agent_position.o == utils.AgentOrientation.UP
             else 3
-            if agent_position.o == utils.AgentOrientation.RIGHT
+            if agent_position.o == utils.AgentOrientation.LEFT
             else 0
         )
         fov = np.rot90(fov, k=k).copy()

@@ -61,6 +61,9 @@ class VPGPolicy:
         if self.baseline_nn is not None:
             self.losses["baseline"] = nn.MSELoss(reduction="mean")
 
+        # Get device
+        self.device = utils.get_torch_device()
+
     def train(
         self,
         epochs,
@@ -153,15 +156,21 @@ class VPGPolicy:
             # Perform mini-batch updates
             epoch_loss = 0.0
             num_minibatches = actual_batch_size // minibatch_size
-            for minibatch, (states, actions, old_log_probs, returns, _) in enumerate(
-                trajectories
-            ):
+            for minibatch, (
+                states,
+                actions,
+                old_log_probs,
+                legal_actions,
+                returns,
+                _,
+            ) in enumerate(trajectories):
                 logger.info(f"Mini-batch {minibatch + 1} / {num_minibatches}")
                 minibatch_losses = self.minibatch_update(
                     optimizer,
                     states,
                     actions,
                     old_log_probs,
+                    legal_actions,
                     returns,
                     std_returns=std_returns,
                     clip_gradient_norm=clip_gradient_norm,
@@ -249,6 +258,7 @@ class VPGPolicy:
         states,
         actions,
         old_log_probs,
+        legal_actions,
         returns,
         std_returns=True,
         std_advs=False,
@@ -261,10 +271,10 @@ class VPGPolicy:
         optimizer.zero_grad()
 
         # Compute log-probabilities of actions
-        log_probs = self.policy_nn(states)
+        log_probs = self.policy_nn(states, mask=legal_actions)
 
         # Compute baseline
-        values = torch.zeros_like(returns, device=utils.get_torch_device())
+        values = torch.zeros_like(returns, device=self.device)
         if self.baseline_nn is not None:
             values = self.baseline_nn(states).squeeze()
 
@@ -371,14 +381,22 @@ class VPGPolicy:
                     display.display(plt.gcf())
 
                 # Compute the best actions based on the current policy
-                action_dict, action_probs = dict(), dict()
+                action_dict, action_probs, legal_actions = dict(), dict(), dict()
                 for agent_handle in range(self.n_agents):
+                    legal_actions[agent_handle] = self.env.get_legal_actions(
+                        agent_handle
+                    )
                     log_probs = self.policy_nn(
                         torch.tensor(
                             observations[agent_handle],
                             dtype=torch.float32,
-                            device=utils.get_torch_device(),
-                        )
+                            device=self.device,
+                        ),
+                        mask=torch.tensor(
+                            legal_actions[agent_handle],
+                            dtype=torch.int64,
+                            device=self.device,
+                        ),
                     )
                     action_probs[agent_handle] = log_probs.cpu().detach().numpy()
                     action = np.random.choice(
@@ -402,6 +420,7 @@ class VPGPolicy:
                         observations[agent_handle],
                         action_dict[agent_handle],
                         action_probs[agent_handle],
+                        legal_actions[agent_handle],
                         rewards[agent_handle],
                         new_observations[agent_handle],
                     )

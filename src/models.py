@@ -1,3 +1,5 @@
+from functools import partial
+
 import torch
 import torch.nn as nn
 import numpy as np
@@ -50,7 +52,7 @@ class MLP(nn.Module):
                 non_linearity(),
             ]
         self.mlp = nn.Sequential(*linear_layers)
-        self.out = nn.LogSoftmax(dim=-1) if log_softmax else nn.Identity()
+        self.log_softmax = log_softmax
 
         # Print model summary
         logger.debug(f"Model summary: {self}")
@@ -61,13 +63,15 @@ class MLP(nn.Module):
         # Transfer to device
         self.to(utils.get_torch_device())
 
-    def forward(self, x):
+    def forward(self, x, mask=None):
         """
         Perform a single example or batch forward pass
         """
         start_dim = 0 if not self.training else 1
         x = self.mlp(torch.flatten(x, start_dim=start_dim))
-        return self.out(x)
+        if not self.log_softmax:
+            return x
+        return utils.masked_log_softmax(x, mask=mask, dim=-1)
 
     def get_gradient_norm(self, norm_type=2.0):
         """
