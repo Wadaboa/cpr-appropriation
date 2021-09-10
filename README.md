@@ -55,6 +55,11 @@ pip install -r init/requirements.txt
 ```
 
 ## Execution
+
+<p align="center">
+	<img src="assets/single-agent-run.gif" />
+</p>
+
 The CPR appropriation environment can be used from another project, as it is a standalone pip package. In order to use it, simply run the following:
 ```python
 import gym
